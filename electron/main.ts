@@ -5,7 +5,10 @@ import {
   shell,
   type IpcMainInvokeEvent,
 } from "electron";
+import { fileURLToPath } from "node:url";
 import * as path from "node:path";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { loadSettings, saveSettings } from "./settings-store";
 import { captureFrame, listDisplays } from "./capture";
 import {
@@ -46,7 +49,7 @@ function createWindow() {
     hasShadow: false,
     title: "SightLine",
     webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
+      preload: path.join(__dirname, "preload.mjs"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,

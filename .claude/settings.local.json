@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run *)",
+      "Bash(npm install *)",
+      "Bash(node_modules/.bin/electron --version)",
+      "Bash(node -e \"const pkg = require\\('./node_modules/electron/package.json'\\); console.log\\(pkg.version\\);\")",
+      "Bash(./node_modules/.bin/tsc -p tsconfig.node.json)",
+      "Bash(VITE_DEV_SERVER_URL=\"http://localhost:5173\" ./node_modules/electron/dist/electron.exe .)",
+      "Bash(node -e \"console.log\\(require\\('s:/Vibe Coding Folder/SigntLine/node_modules/vite-plugin-electron/package.json'\\).version\\)\")",
+      "Bash(node -e \"const p = require\\('s:/Vibe Coding Folder/SigntLine/node_modules/@anthropic-ai/sdk/package.json'\\); console.log\\('type:', p.type\\); console.log\\('main:', p.main\\); console.log\\('exports keys:', p.exports ? Object.keys\\(p.exports\\).slice\\(0,5\\) : 'none'\\)\")",
+      "Bash(node -e \"const p = require\\('s:/Vibe Coding Folder/SigntLine/node_modules/openai/package.json'\\); console.log\\('type:', p.type\\); console.log\\('main:', p.main\\); console.log\\('exports condition:', JSON.stringify\\(p.exports?.['.'], null, 2\\).substring\\(0, 200\\)\\)\")",
+      "Bash(node -e \"const p = require\\('s:/Vibe Coding Folder/SigntLine/node_modules/@anthropic-ai/sdk/package.json'\\); console.log\\(JSON.stringify\\(p.exports['.'], null, 2\\)\\)\")",
+      "Bash(NODE_DEBUG=esm ELECTRON_ENABLE_LOGGING=1 node_modules/electron/dist/electron.exe .)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:www.electronjs.org)",
+      "WebFetch(domain:electron-vite.org)",
+      "Bash(cat)",
+      "Bash(node_modules/electron/dist/electron.exe dist-electron/test2.cjs)",
+      "Bash(node_modules/electron/dist/electron.exe .)",
+      "Bash(npm show *)",
+      "Bash(echo '{\"main\":\"test-js.js\"}')",
+      "Bash(node_modules/electron/dist/electron.exe dist-electron *)",
+      "Bash(npm uninstall *)",
+      "Bash(npx tsc *)",
+      "Bash(node_modules/.bin/electron test-main.js)",
+      "Bash(node -e ' *)",
+      "Bash(node_modules/.bin/electron .)",
+      "Bash(ELECTRON_RUN_AS_NODE= node_modules/.bin/electron test-main.js)",
+      "Bash(node scripts/build-electron.js)",
+      "Bash(kill %bb5x6eae6)",
+      "Bash(taskkill /F /IM electron.exe)"
+    ]
+  }
+}

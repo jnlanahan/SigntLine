@@ -6,7 +6,7 @@ import type {
 } from "./types";
 import { getKey } from "./credentials";
 
-const MODEL = "claude-opus-4-7";
+const MODEL = "claude-sonnet-4-6";
 const MAX_TOKENS = 600;
 const MAX_FRAMES = 5;
 
