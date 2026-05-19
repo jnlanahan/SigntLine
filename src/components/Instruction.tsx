@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from "react";
+
 interface Props {
   instruction: string;
   status: string;
@@ -6,7 +8,40 @@ interface Props {
   researchQuery?: string | null;
 }
 
+// Soft typewriter reveal — caps at ~140 chars so longer responses don't
+// drag, and gracefully skips animation for unchanged text.
+function useTypewriter(text: string): string {
+  const [shown, setShown] = useState(text);
+  const lastRef = useRef(text);
+
+  useEffect(() => {
+    if (text === lastRef.current) return;
+    lastRef.current = text;
+    if (!text) {
+      setShown("");
+      return;
+    }
+    let i = 0;
+    setShown("");
+    const stepSize = Math.max(2, Math.ceil(text.length / 60));
+    const id = window.setInterval(() => {
+      i += stepSize;
+      if (i >= text.length) {
+        setShown(text);
+        window.clearInterval(id);
+      } else {
+        setShown(text.slice(0, i));
+      }
+    }, 16);
+    return () => window.clearInterval(id);
+  }, [text]);
+
+  return shown;
+}
+
 export function Instruction({ instruction, status, done, error, researchQuery }: Props) {
+  const display = useTypewriter(instruction);
+
   if (error) {
     return (
       <div className="rounded-md border border-error/40 bg-error/10 px-3 py-2 text-xs text-error">
@@ -16,8 +51,9 @@ export function Instruction({ instruction, status, done, error, researchQuery }:
   }
   if (done) {
     return (
-      <div className="rounded-md border border-watching/40 bg-watching/10 px-3 py-2 text-sm text-watching">
-        ✓ Task complete. {instruction}
+      <div className="animate-fade-in rounded-md border border-watching/40 bg-watching/10 px-3 py-2.5 text-sm leading-snug text-watching">
+        <span className="mr-1">✓</span>
+        {instruction || "Task complete."}
       </div>
     );
   }
@@ -59,7 +95,10 @@ export function Instruction({ instruction, status, done, error, researchQuery }:
   }
   return (
     <div className="animate-fade-in rounded-md border border-panel-border bg-black/30 px-3 py-2.5 text-sm leading-snug text-neutral-50">
-      {instruction}
+      {display}
+      {display.length < instruction.length && (
+        <span className="ml-0.5 inline-block w-1 animate-pulse bg-neutral-400" />
+      )}
     </div>
   );
 }

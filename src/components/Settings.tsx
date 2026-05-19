@@ -1,8 +1,20 @@
 import { useEffect, useState } from "react";
 import { useSettings } from "../store/settings";
 import { api } from "../lib/api";
-import type { DisplayInfo } from "../lib/api";
+import type { DisplayInfo, TtsVoiceId } from "../lib/api";
 import { IntervalSlider } from "./IntervalSlider";
+import { useTts } from "../hooks/useTts";
+
+const VOICE_OPTIONS: { id: TtsVoiceId; label: string; sample: string }[] = [
+  { id: "nova", label: "Nova — warm, friendly (default)", sample: "Hey, I'm Nova. Ready when you are." },
+  { id: "shimmer", label: "Shimmer — bright, upbeat", sample: "Hi there — let's get this going!" },
+  { id: "sage", label: "Sage — calm, thoughtful", sample: "Okay, take your time. I'm right here with you." },
+  { id: "coral", label: "Coral — warm, expressive", sample: "Alright, let's walk through this together." },
+  { id: "alloy", label: "Alloy — neutral, clear", sample: "Hello. I'll guide you through the next step." },
+  { id: "echo", label: "Echo — soft, balanced", sample: "Hey, let me know when you're ready to go." },
+  { id: "fable", label: "Fable — gentle, narrative", sample: "Once you're set, we'll begin." },
+  { id: "onyx", label: "Onyx — deeper, steady", sample: "Alright. Let's take it one step at a time." },
+];
 
 interface Props {
   onClose(): void;
@@ -170,7 +182,11 @@ export function Settings({ onClose }: Props) {
           <p className="text-[11px] uppercase tracking-wide text-neutral-400">
             Read instructions aloud
           </p>
-          <p className="text-[10px] text-neutral-500">Uses your device's built-in voice</p>
+          <p className="text-[10px] text-neutral-500">
+            {keyStatus.openai
+              ? "Uses OpenAI's natural voice"
+              : "Add an OpenAI key for the natural voice"}
+          </p>
         </div>
         <button
           type="button"
@@ -190,9 +206,52 @@ export function Settings({ onClose }: Props) {
         </button>
       </section>
 
+      <VoicePicker disabled={!settings.ttsEnabled || !keyStatus.openai} />
+
       {savedMsg && (
         <p className="text-[11px] text-watching">{savedMsg}</p>
       )}
     </div>
+  );
+}
+
+function VoicePicker({ disabled }: { disabled: boolean }) {
+  const settings = useSettings((s) => s.settings);
+  const patch = useSettings((s) => s.patch);
+  const { speak } = useTts();
+  if (!settings) return null;
+  return (
+    <section className="flex flex-col gap-1.5">
+      <label className="text-[11px] uppercase tracking-wide text-neutral-400">
+        Voice
+      </label>
+      <div className="flex items-center gap-2">
+        <select
+          title="Voice"
+          disabled={disabled}
+          value={settings.ttsVoice}
+          onChange={(e) => void patch({ ttsVoice: e.target.value as TtsVoiceId })}
+          className="flex-1 rounded-md border border-panel-border bg-black/30 px-2 py-1 text-xs text-neutral-100 disabled:opacity-50"
+        >
+          {VOICE_OPTIONS.map((v) => (
+            <option key={v.id} value={v.id}>
+              {v.label}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => {
+            const opt = VOICE_OPTIONS.find((v) => v.id === settings.ttsVoice);
+            if (opt) speak(opt.sample);
+          }}
+          className="rounded-md border border-panel-border bg-black/30 px-2 py-1 text-xs text-neutral-200 hover:bg-black/50 disabled:opacity-40"
+          title="Preview voice"
+        >
+          ▶ Preview
+        </button>
+      </div>
+    </section>
   );
 }

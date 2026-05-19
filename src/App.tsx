@@ -3,6 +3,7 @@ import { useSession } from "./store/session";
 import { useSettings } from "./store/settings";
 import { useSessionLoop } from "./hooks/useSessionLoop";
 import { useRateLimitCountdown } from "./hooks/useRateLimitCountdown";
+import { useTts } from "./hooks/useTts";
 import { api } from "./lib/api";
 import { Controls } from "./components/Controls";
 import { FollowUpInput } from "./components/FollowUpInput";
@@ -40,6 +41,7 @@ export default function App() {
   const [showPeek, setShowPeek] = useState(false);
 
   const rateLimitCountdown = useRateLimitCountdown();
+  const { cancel: cancelTts } = useTts();
 
   const openSettings = useCallback(() => setView("settings"), []);
   useSessionLoop(openSettings, focused);
@@ -96,6 +98,7 @@ export default function App() {
   }
 
   function pause() {
+    cancelTts();
     useSession.getState().setPauseReason("user");
     setStatus("paused");
   }
@@ -103,21 +106,24 @@ export default function App() {
     useSession.getState().setPauseReason(null);
     useSession.getState().resetIdleCycles();
     useSession.getState().setResearchQuery(null);
+    useSession.getState().setCooldownUntil(null);
     setStatus("watching");
   }
   function stop() {
+    cancelTts();
     reset();
     setShowPeek(false);
     void api().overlay.hideGlow();
   }
 
   function submitFollowUp(text: string) {
+    cancelTts();
     appendTurn({ role: "user", content: text, timestamp: Date.now() });
-    if (status === "thinking") {
-      useSession.getState().setPendingFollowUp(text);
-      return;
-    }
     useSession.getState().setPendingFollowUp(text);
+    // A real follow-up should always trigger Claude on the next tick, even
+    // mid-cooldown — the user just typed at us.
+    useSession.getState().setCooldownUntil(null);
+    if (status === "thinking") return;
     if (
       status === "paused" ||
       status === "waiting" ||
@@ -215,7 +221,11 @@ export default function App() {
                 onResume={resume}
                 onStop={stop}
                 onOpenSettings={openSettings}
-                onToggleVoice={() => void patchSettings({ ttsEnabled: !settings?.ttsEnabled })}
+                onToggleVoice={() => {
+                  const nextEnabled = !settings?.ttsEnabled;
+                  if (!nextEnabled) cancelTts();
+                  void patchSettings({ ttsEnabled: nextEnabled });
+                }}
               />
             </div>
             <FollowUpInput

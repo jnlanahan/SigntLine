@@ -17,4 +17,5 @@ export type {
   InstructionResponse,
   Settings,
   SessionStatus,
+  TtsVoiceId,
 } from "../../electron/types";

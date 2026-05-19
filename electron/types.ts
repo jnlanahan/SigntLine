@@ -40,12 +40,23 @@ export interface ClarificationResponse {
   questions: string[];
 }
 
+export type TtsVoiceId =
+  | "alloy"
+  | "echo"
+  | "fable"
+  | "nova"
+  | "onyx"
+  | "shimmer"
+  | "coral"
+  | "sage";
+
 export interface Settings {
   captureIntervalSec: number;
   opacity: number;
   selectedDisplayId: string | null;
   hasSeenPrivacyNotice: boolean;
   ttsEnabled: boolean;
+  ttsVoice: TtsVoiceId;
 }
 
 export interface DisplayInfo {
