@@ -30,7 +30,9 @@
       "Bash(ELECTRON_RUN_AS_NODE= node_modules/.bin/electron test-main.js)",
       "Bash(node scripts/build-electron.js)",
       "Bash(kill %bb5x6eae6)",
-      "Bash(taskkill /F /IM electron.exe)"
+      "Bash(taskkill /F /IM electron.exe)",
+      "Bash(npx electron *)",
+      "Bash(node scripts/run-electron.js)"
     ]
   }
 }

@@ -4,7 +4,9 @@ export type SessionStatus =
   | "thinking"
   | "waiting"
   | "paused"
-  | "error";
+  | "error"
+  | "clarifying"
+  | "researching";
 
 export interface CompletedStep {
   index: number;
@@ -30,6 +32,12 @@ export interface InstructionResponse {
   instruction: string;
   completedSteps: string[];
   done: boolean;
+  needsResearch: boolean;
+  researchQuery: string;
+}
+
+export interface ClarificationResponse {
+  questions: string[];
 }
 
 export interface Settings {
@@ -37,6 +45,7 @@ export interface Settings {
   opacity: number;
   selectedDisplayId: string | null;
   hasSeenPrivacyNotice: boolean;
+  ttsEnabled: boolean;
 }
 
 export interface DisplayInfo {
@@ -65,4 +74,8 @@ export type IpcChannel =
   | "window:set-opacity"
   | "window:set-ignore-mouse"
   | "window:open-external"
+  | "app:quit"
+  | "overlay:show-glow"
+  | "overlay:hide-glow"
+  | "tts:speak"
   | "session:log";

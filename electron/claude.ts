@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type {
   CaptureFrame,
+  ClarificationResponse,
   ConversationTurn,
   InstructionResponse,
 } from "./types";
@@ -10,14 +11,16 @@ const MODEL = "claude-sonnet-4-6";
 const MAX_TOKENS = 600;
 const MAX_FRAMES = 5;
 
-const SYSTEM_PROMPT = `You are a real-time technical support assistant watching the user's screen. Give ONE clear specific instruction per response referencing exactly what you see on screen. Keep responses under 60 words. Track completed steps and never repeat them. If you see an error, address it before continuing.
+const SYSTEM_PROMPT = `You are a warm, patient coach sitting next to the user and guiding them through a task. Speak naturally and conversationally — like a knowledgeable friend, not a manual. Give ONE specific action at a time, described in plain everyday language. Use encouraging, friendly phrases like "Go ahead and...", "Now just...", "You'll see...", "Nice — next up...". Keep it under 70 words. Track completed steps and never repeat them. If you see an error on screen, acknowledge it warmly and help them fix it before moving on. Only give a new instruction once the user has clearly taken action.
 
 Output rules:
 - Respond with a JSON object only, no prose around it.
-- Schema: {"instruction": string, "completed_steps": string[], "done": boolean}
-- "instruction" is the single next action for the user, under 60 words, referencing what is visible.
+- Schema: {"instruction": string, "completed_steps": string[], "done": boolean, "needsResearch": boolean, "researchQuery": string}
+- "instruction" is your next coaching message — one specific action, conversational tone, under 70 words.
 - "completed_steps" is the full running list of steps already done (short phrases).
-- "done" is true only when the user's stated goal is fully achieved.`;
+- "done" is true only when the user's stated goal is fully achieved.
+- "needsResearch" is true ONLY when you are genuinely blocked by lack of current documentation or external information. Set false in all other cases.
+- "researchQuery" is a precise web search query string when needsResearch is true, otherwise empty string.`;
 
 export class MissingApiKeyError extends Error {
   constructor() {
@@ -41,6 +44,7 @@ export interface NextInstructionArgs {
   conversation: ConversationTurn[];
   frames: CaptureFrame[];
   followUp?: string;
+  clarificationContext?: string;
 }
 
 export async function getNextInstruction(
@@ -117,12 +121,16 @@ function buildContextHeader(args: NextInstructionArgs, frameCount: number): stri
     args.completedSteps.length === 0
       ? "(none yet)"
       : args.completedSteps.map((s, i) => `  ${i + 1}. ${s}`).join("\n");
-  return [
+  const parts = [
     `Original goal: ${args.goal}`,
     `Steps already completed:\n${stepsList}`,
     `Attached screenshots: ${frameCount} (oldest to newest).`,
-    `Give the single next instruction in JSON.`,
-  ].join("\n\n");
+  ];
+  if (args.clarificationContext && args.clarificationContext.trim().length > 0) {
+    parts.push(`Answers to clarifying questions:\n${args.clarificationContext}`);
+  }
+  parts.push(`Give the single next instruction in JSON.`);
+  return parts.join("\n\n");
 }
 
 function convertHistory(
@@ -160,6 +168,8 @@ function parseInstruction(
         instruction?: string;
         completed_steps?: string[];
         done?: boolean;
+        needsResearch?: boolean;
+        researchQuery?: string;
       };
       return {
         instruction: (obj.instruction ?? "").trim() || text,
@@ -167,6 +177,8 @@ function parseInstruction(
           ? obj.completed_steps.map(String)
           : previousSteps,
         done: Boolean(obj.done),
+        needsResearch: Boolean(obj.needsResearch),
+        researchQuery: (obj.researchQuery ?? "").trim(),
       };
     } catch {
       // fall through
@@ -177,7 +189,37 @@ function parseInstruction(
     instruction: text || "Continue with the next step.",
     completedSteps: previousSteps,
     done: false,
+    needsResearch: false,
+    researchQuery: "",
   };
+}
+
+const CLARIFICATION_SYSTEM_PROMPT = `You are a goal clarification assistant. Given the user's task, generate exactly 2-3 short, specific clarifying questions that would help you give better step-by-step guidance. Focus on questions that could meaningfully change the instructions (e.g., which specific tool, which step in the process, what they already have set up). Output JSON only: {"questions": ["...", "...", "..."]}`;
+
+export async function getClarifications(args: { goal: string }): Promise<ClarificationResponse> {
+  const apiKey = await getKey("anthropic");
+  if (!apiKey) throw new MissingApiKeyError();
+
+  const client = new Anthropic({ apiKey });
+  try {
+    const resp = await client.messages.create({
+      model: MODEL,
+      max_tokens: 200,
+      system: CLARIFICATION_SYSTEM_PROMPT,
+      messages: [{ role: "user", content: `Task: ${args.goal}` }],
+    });
+    const text = extractText(resp);
+    const json = extractJson(text);
+    if (json) {
+      const obj = JSON.parse(json) as { questions?: unknown };
+      if (Array.isArray(obj.questions)) {
+        return { questions: obj.questions.slice(0, 3).map(String) };
+      }
+    }
+  } catch {
+    // fail safe — never block session start
+  }
+  return { questions: [] };
 }
 
 function extractJson(text: string): string | null {

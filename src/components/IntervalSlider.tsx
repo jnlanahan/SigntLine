@@ -6,11 +6,11 @@ interface Props {
 export function IntervalSlider({ value, onChange }: Props) {
   return (
     <div className="no-drag flex items-center gap-2 text-[11px] text-neutral-400">
-      <span>Capture every</span>
+      <span>Check every</span>
       <input
         type="range"
-        min={2}
-        max={30}
+        min={5}
+        max={60}
         step={1}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}

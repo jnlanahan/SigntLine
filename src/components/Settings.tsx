@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useSettings } from "../store/settings";
 import { api } from "../lib/api";
 import type { DisplayInfo } from "../lib/api";
+import { IntervalSlider } from "./IntervalSlider";
 
 interface Props {
   onClose(): void;
@@ -44,6 +45,7 @@ export function Settings({ onClose }: Props) {
       <div className="flex items-center justify-between">
         <h2 className="text-base font-semibold text-white">Settings</h2>
         <button
+          type="button"
           onClick={onClose}
           className="rounded-md border border-panel-border px-2 py-1 text-xs text-neutral-300 hover:bg-black/40"
         >
@@ -64,14 +66,16 @@ export function Settings({ onClose }: Props) {
             className="flex-1 rounded-md border border-panel-border bg-black/30 px-2 py-1 text-xs text-neutral-100 placeholder:text-neutral-500 focus:border-accent focus:outline-none"
           />
           <button
-            onClick={() => saveKey("anthropic", anthropicKey)}
+            type="button"
+            onClick={() => void saveKey("anthropic", anthropicKey)}
             className="rounded-md bg-accent px-2 py-1 text-xs font-semibold text-white"
           >
             Save
           </button>
           {keyStatus.anthropic && (
             <button
-              onClick={() => clearKey("anthropic")}
+              type="button"
+              onClick={() => void clearKey("anthropic")}
               className="rounded-md border border-panel-border px-2 py-1 text-xs text-neutral-300 hover:bg-error/30"
             >
               Clear
@@ -82,7 +86,7 @@ export function Settings({ onClose }: Props) {
 
       <section className="flex flex-col gap-2">
         <label className="text-[11px] uppercase tracking-wide text-neutral-400">
-          OpenAI API key (Whisper voice input)
+          OpenAI API key (voice input)
         </label>
         <div className="flex items-center gap-2">
           <input
@@ -93,23 +97,22 @@ export function Settings({ onClose }: Props) {
             className="flex-1 rounded-md border border-panel-border bg-black/30 px-2 py-1 text-xs text-neutral-100 placeholder:text-neutral-500 focus:border-accent focus:outline-none"
           />
           <button
-            onClick={() => saveKey("openai", openaiKey)}
+            type="button"
+            onClick={() => void saveKey("openai", openaiKey)}
             className="rounded-md bg-accent px-2 py-1 text-xs font-semibold text-white"
           >
             Save
           </button>
           {keyStatus.openai && (
             <button
-              onClick={() => clearKey("openai")}
+              type="button"
+              onClick={() => void clearKey("openai")}
               className="rounded-md border border-panel-border px-2 py-1 text-xs text-neutral-300 hover:bg-error/30"
             >
               Clear
             </button>
           )}
         </div>
-        <p className="text-[10px] text-neutral-500">
-          Keys are stored in the Windows Credential Manager via keytar.
-        </p>
       </section>
 
       <section className="flex flex-col gap-2">
@@ -117,10 +120,9 @@ export function Settings({ onClose }: Props) {
           Display
         </label>
         <select
+          title="Select display"
           value={settings.selectedDisplayId ?? ""}
-          onChange={(e) =>
-            patch({ selectedDisplayId: e.target.value || null })
-          }
+          onChange={(e) => patch({ selectedDisplayId: e.target.value || null })}
           className="rounded-md border border-panel-border bg-black/30 px-2 py-1 text-xs text-neutral-100"
         >
           <option value="">Primary display (auto)</option>
@@ -135,12 +137,11 @@ export function Settings({ onClose }: Props) {
       <section className="flex flex-col gap-2">
         <label className="flex items-center justify-between text-[11px] uppercase tracking-wide text-neutral-400">
           Overlay opacity
-          <span className="text-neutral-200">
-            {Math.round(settings.opacity * 100)}%
-          </span>
+          <span className="text-neutral-200">{Math.round(settings.opacity * 100)}%</span>
         </label>
         <input
           type="range"
+          title="Overlay opacity"
           min={0.4}
           max={1}
           step={0.02}
@@ -155,23 +156,38 @@ export function Settings({ onClose }: Props) {
       </section>
 
       <section className="flex flex-col gap-2">
-        <label className="flex items-center justify-between text-[11px] uppercase tracking-wide text-neutral-400">
-          Capture interval
-          <span className="text-neutral-200">
-            {settings.captureIntervalSec}s
-          </span>
+        <label className="text-[11px] uppercase tracking-wide text-neutral-400">
+          Check frequency
         </label>
-        <input
-          type="range"
-          min={2}
-          max={30}
-          step={1}
+        <IntervalSlider
           value={settings.captureIntervalSec}
-          onChange={(e) =>
-            patch({ captureIntervalSec: Number(e.target.value) })
-          }
-          className="slider-range"
+          onChange={(v) => patch({ captureIntervalSec: v })}
         />
+      </section>
+
+      <section className="flex items-center justify-between">
+        <div>
+          <p className="text-[11px] uppercase tracking-wide text-neutral-400">
+            Read instructions aloud
+          </p>
+          <p className="text-[10px] text-neutral-500">Uses your device's built-in voice</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => patch({ ttsEnabled: !settings.ttsEnabled })}
+          className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+            settings.ttsEnabled ? "bg-accent" : "bg-neutral-600"
+          }`}
+          role="switch"
+          aria-checked={settings.ttsEnabled ? "true" : "false"}
+          title="Toggle read aloud"
+        >
+          <span
+            className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+              settings.ttsEnabled ? "translate-x-4" : "translate-x-0"
+            }`}
+          />
+        </button>
       </section>
 
       {savedMsg && (

@@ -7,24 +7,32 @@ interface Props {
 
 const LABELS: Record<SessionStatus, string> = {
   idle: "Idle",
-  watching: "Watching",
+  watching: "Active",
   thinking: "Thinking",
-  waiting: "Waiting",
+  waiting: "Done",
   paused: "Paused",
   error: "Error",
+  clarifying: "Setting up",
+  researching: "Researching",
 };
 
 const COLORS: Record<SessionStatus, string> = {
   idle: "bg-waiting",
   watching: "bg-watching",
   thinking: "bg-thinking",
-  waiting: "bg-waiting",
+  waiting: "bg-watching",
   paused: "bg-waiting",
   error: "bg-error",
+  clarifying: "bg-thinking",
+  researching: "bg-thinking",
 };
 
 export function StatusIndicator({ status, rateLimitCountdown }: Props) {
-  const pulses = status === "watching" || status === "thinking";
+  const pulses =
+    status === "watching" ||
+    status === "thinking" ||
+    status === "clarifying" ||
+    status === "researching";
   return (
     <div className="flex items-center gap-2 text-xs text-neutral-300">
       <span

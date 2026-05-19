@@ -2,12 +2,13 @@ import { useState } from "react";
 import { useVoice } from "../hooks/useVoice";
 
 interface Props {
-  disabled: boolean;
+  isThinking: boolean;
   onSubmit(text: string): void;
 }
 
-export function FollowUpInput({ disabled, onSubmit }: Props) {
+export function FollowUpInput({ isThinking, onSubmit }: Props) {
   const [value, setValue] = useState("");
+  const [queued, setQueued] = useState(false);
   const voice = useVoice((text) => {
     setValue((prev) => (prev ? `${prev} ${text}` : text));
   });
@@ -17,6 +18,10 @@ export function FollowUpInput({ disabled, onSubmit }: Props) {
     if (!text) return;
     onSubmit(text);
     setValue("");
+    if (isThinking) {
+      setQueued(true);
+      window.setTimeout(() => setQueued(false), 1500);
+    }
   }
 
   return (
@@ -24,8 +29,7 @@ export function FollowUpInput({ disabled, onSubmit }: Props) {
       <input
         type="text"
         value={value}
-        disabled={disabled}
-        placeholder="Ask a follow-up…"
+        placeholder={queued ? "Queued — will send when done…" : "Ask a follow-up or speak 🎤"}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey) {
@@ -33,11 +37,12 @@ export function FollowUpInput({ disabled, onSubmit }: Props) {
             submit();
           }
         }}
-        className="flex-1 bg-transparent text-xs text-neutral-100 placeholder:text-neutral-500 focus:outline-none disabled:opacity-50"
+        className="flex-1 bg-transparent text-xs text-neutral-100 placeholder:text-neutral-500 focus:outline-none"
       />
       <button
+        type="button"
         onClick={() => (voice.state === "recording" ? voice.stop() : voice.start())}
-        disabled={disabled || voice.state === "transcribing"}
+        disabled={voice.state === "transcribing"}
         className={`rounded px-1.5 py-0.5 text-[11px] transition ${
           voice.state === "recording"
             ? "bg-error/30 text-error"
@@ -48,17 +53,18 @@ export function FollowUpInput({ disabled, onSubmit }: Props) {
             ? "Stop recording"
             : voice.state === "transcribing"
               ? "Transcribing…"
-              : "Voice input (Whisper)"
+              : "Voice input"
         }
       >
         {voice.state === "recording" ? "● rec" : voice.state === "transcribing" ? "…" : "🎤"}
       </button>
       <button
+        type="button"
         onClick={submit}
-        disabled={disabled || value.trim().length === 0}
+        disabled={value.trim().length === 0}
         className="rounded bg-accent px-2 py-0.5 text-[11px] font-medium text-white disabled:opacity-40"
       >
-        Send
+        {queued ? "✓" : "Send"}
       </button>
     </div>
   );

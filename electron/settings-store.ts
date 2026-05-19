@@ -4,10 +4,11 @@ import * as path from "node:path";
 import type { Settings } from "./types";
 
 const DEFAULTS: Settings = {
-  captureIntervalSec: 5,
+  captureIntervalSec: 15,
   opacity: 0.92,
   selectedDisplayId: null,
   hasSeenPrivacyNotice: false,
+  ttsEnabled: false,
 };
 
 function settingsPath(): string {

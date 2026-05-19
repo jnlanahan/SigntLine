@@ -7,12 +7,11 @@ import { api } from "./lib/api";
 import { Controls } from "./components/Controls";
 import { FollowUpInput } from "./components/FollowUpInput";
 import { GoalPrompt } from "./components/GoalPrompt";
+import type { Clarification } from "./components/GoalPrompt";
 import { Instruction } from "./components/Instruction";
-import { IntervalSlider } from "./components/IntervalSlider";
 import { PrivacyNotice } from "./components/PrivacyNotice";
 import { Settings as SettingsView } from "./components/Settings";
 import { StatusIndicator } from "./components/StatusIndicator";
-import { Thumbnail } from "./components/Thumbnail";
 import { CompletedSteps } from "./components/CompletedSteps";
 
 type View = "panel" | "settings" | "privacy";
@@ -29,6 +28,7 @@ export default function App() {
   const setStatus = useSession((s) => s.setStatus);
   const setGoal = useSession((s) => s.setGoal);
   const appendTurn = useSession((s) => s.appendTurn);
+  const researchQuery = useSession((s) => s.researchQuery);
 
   const settings = useSettings((s) => s.settings);
   const keyStatus = useSettings((s) => s.keyStatus);
@@ -37,25 +37,22 @@ export default function App() {
 
   const [view, setView] = useState<View>("panel");
   const [focused, setFocused] = useState(false);
+  const [showPeek, setShowPeek] = useState(false);
 
   const rateLimitCountdown = useRateLimitCountdown();
 
   const openSettings = useCallback(() => setView("settings"), []);
-  useSessionLoop(openSettings);
+  useSessionLoop(openSettings, focused);
 
-  // Initial load + privacy gate.
   useEffect(() => {
     void loadSettings();
   }, [loadSettings]);
 
   useEffect(() => {
     if (!settings) return;
-    if (!settings.hasSeenPrivacyNotice) {
-      setView("privacy");
-    }
+    if (!settings.hasSeenPrivacyNotice) setView("privacy");
   }, [settings]);
 
-  // Window focus → opacity toggle: semi-transparent when not in focus.
   useEffect(() => {
     const onFocus = () => setFocused(true);
     const onBlur = () => setFocused(false);
@@ -67,42 +64,68 @@ export default function App() {
     };
   }, []);
 
-  // Apply focus-based opacity to the OS window.
   useEffect(() => {
     if (!settings) return;
     const target = focused ? 1 : settings.opacity;
     void api().window.setOpacity(target);
   }, [focused, settings]);
 
-  function startSession(g: string) {
+  // Dismiss peek overlay on Escape
+  useEffect(() => {
+    if (!showPeek) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setShowPeek(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showPeek]);
+
+  function startSession(g: string, clarifications: Clarification[] = []) {
     if (!keyStatus.anthropic) {
       setView("settings");
       return;
     }
+    const ctx = clarifications
+      .filter((c) => c.answer.trim())
+      .map((c) => `Q: ${c.question}\nA: ${c.answer}`)
+      .join("\n\n");
     reset();
+    if (ctx) useSession.getState().setClarificationContext(ctx);
     setGoal(g);
-    appendTurn({
-      role: "user",
-      content: `Goal: ${g}`,
-      timestamp: Date.now(),
-    });
+    appendTurn({ role: "user", content: `Goal: ${g}`, timestamp: Date.now() });
     setStatus("watching");
+    void api().overlay.showGlow(settings?.selectedDisplayId ?? null);
   }
 
   function pause() {
+    useSession.getState().setPauseReason("user");
     setStatus("paused");
   }
   function resume() {
+    useSession.getState().setPauseReason(null);
+    useSession.getState().resetIdleCycles();
+    useSession.getState().setResearchQuery(null);
     setStatus("watching");
   }
   function stop() {
     reset();
+    setShowPeek(false);
+    void api().overlay.hideGlow();
   }
 
   function submitFollowUp(text: string) {
     appendTurn({ role: "user", content: text, timestamp: Date.now() });
-    // Trigger a fresh tick by toggling status back to watching.
-    if (status === "paused" || status === "waiting" || status === "error") {
+    if (status === "thinking") {
+      useSession.getState().setPendingFollowUp(text);
+      return;
+    }
+    useSession.getState().setPendingFollowUp(text);
+    if (
+      status === "paused" ||
+      status === "waiting" ||
+      status === "error" ||
+      status === "researching"
+    ) {
+      useSession.getState().setPauseReason(null);
+      useSession.getState().setResearchQuery(null);
       setStatus("watching");
     }
   }
@@ -130,35 +153,54 @@ export default function App() {
     );
   }
 
-  // Main panel
   return (
     <PanelShell>
-      <div className="flex h-full flex-col">
-        <TitleBar onOpenSettings={openSettings} />
+      <div className="relative flex h-full flex-col">
+        <TitleBar
+          onOpenSettings={openSettings}
+          onPeek={() => setShowPeek((v) => !v)}
+          hasPeek={Boolean(lastFrame)}
+          showPeek={showPeek}
+        />
+
+        {/* Peek overlay */}
+        {showPeek && lastFrame && (
+          <div
+            className="absolute inset-x-0 top-8 z-50 mx-2 overflow-hidden rounded-md border border-panel-border bg-black/90 shadow-xl"
+            onClick={() => setShowPeek(false)}
+          >
+            <img
+              src={lastFrame.dataUrl}
+              alt="Current view"
+              className="max-h-48 w-full object-contain"
+            />
+            <p className="px-2 py-1 text-center text-[9px] text-neutral-500">
+              {new Date(lastFrame.timestamp).toLocaleTimeString()} · click to close
+            </p>
+          </div>
+        )}
+
         <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto p-3 sl-scroll">
           {!goal ? (
             <GoalPrompt onStart={startSession} />
           ) : (
             <>
-              <div className="flex items-start gap-2">
-                <Thumbnail frame={lastFrame} />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-[10px] uppercase tracking-wide text-neutral-500">
-                    Goal
-                  </p>
-                  <p className="line-clamp-2 text-xs text-neutral-200">{goal}</p>
-                </div>
+              <div className="flex flex-col gap-1">
+                <p className="text-[10px] uppercase tracking-wide text-neutral-500">Goal</p>
+                <p className="text-xs text-neutral-200">{goal}</p>
               </div>
               <Instruction
                 instruction={instruction}
                 status={status}
                 done={done}
                 error={error}
+                researchQuery={researchQuery}
               />
               <CompletedSteps steps={completedSteps} />
             </>
           )}
         </div>
+
         {goal && (
           <div className="no-drag flex flex-col gap-2 border-t border-panel-border bg-black/20 p-2.5">
             <div className="flex items-center justify-between">
@@ -168,22 +210,18 @@ export default function App() {
               />
               <Controls
                 status={status}
+                ttsEnabled={settings?.ttsEnabled ?? false}
                 onPause={pause}
                 onResume={resume}
                 onStop={stop}
                 onOpenSettings={openSettings}
+                onToggleVoice={() => void patchSettings({ ttsEnabled: !settings?.ttsEnabled })}
               />
             </div>
             <FollowUpInput
-              disabled={status === "thinking"}
+              isThinking={status === "thinking"}
               onSubmit={submitFollowUp}
             />
-            {settings && (
-              <IntervalSlider
-                value={settings.captureIntervalSec}
-                onChange={(v) => patchSettings({ captureIntervalSec: v })}
-              />
-            )}
           </div>
         )}
       </div>
@@ -199,20 +237,52 @@ function PanelShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-function TitleBar({ onOpenSettings }: { onOpenSettings(): void }) {
+function TitleBar({
+  onOpenSettings,
+  onPeek,
+  hasPeek,
+  showPeek,
+}: {
+  onOpenSettings(): void;
+  onPeek(): void;
+  hasPeek: boolean;
+  showPeek: boolean;
+}) {
   return (
     <div className="drag-region flex items-center gap-2 border-b border-panel-border px-3 py-1.5">
       <div className="h-2.5 w-2.5 rounded-sm bg-accent" />
       <span className="text-xs font-semibold tracking-wide text-neutral-100">
         SightLine
       </span>
-      <span className="text-[10px] text-neutral-500">· always on top</span>
+      {hasPeek && (
+        <button
+          type="button"
+          onClick={onPeek}
+          className={`no-drag ml-auto rounded px-1.5 py-0.5 text-[11px] transition ${
+            showPeek
+              ? "bg-white/10 text-neutral-100"
+              : "text-neutral-500 hover:bg-white/10 hover:text-neutral-300"
+          }`}
+          title="Peek at current view"
+        >
+          ⊡
+        </button>
+      )}
       <button
+        type="button"
         onClick={onOpenSettings}
-        className="no-drag ml-auto rounded px-1.5 py-0.5 text-[11px] text-neutral-400 hover:bg-white/10 hover:text-neutral-100"
+        className={`no-drag rounded px-1.5 py-0.5 text-[11px] text-neutral-400 hover:bg-white/10 hover:text-neutral-100 ${hasPeek ? "" : "ml-auto"}`}
         title="Settings"
       >
         ⚙
+      </button>
+      <button
+        type="button"
+        onClick={() => void api().app.quit()}
+        className="no-drag rounded px-1.5 py-0.5 text-[11px] text-neutral-400 hover:bg-red-500/20 hover:text-red-400"
+        title="Quit"
+      >
+        ✕
       </button>
     </div>
   );

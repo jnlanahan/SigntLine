@@ -11,11 +11,17 @@ export interface SessionState {
   currentInstruction: string;
   completedSteps: string[];
   conversation: ConversationTurn[];
-  // Rolling buffer — last 5 frames, kept in-memory only.
   frames: CaptureFrame[];
   lastError: string | null;
   rateLimitUntil: number | null;
   done: boolean;
+
+  clarificationContext: string;
+  lastProcessedHash: string | null;
+  pendingFollowUp: string | null;
+  pauseReason: "user" | "idle" | null;
+  idleCycles: number;
+  researchQuery: string | null;
 
   setStatus(s: SessionStatus): void;
   setGoal(goal: string): void;
@@ -26,6 +32,13 @@ export interface SessionState {
   setError(message: string | null): void;
   setRateLimit(until: number | null): void;
   setDone(done: boolean): void;
+  setClarificationContext(ctx: string): void;
+  setLastProcessedHash(h: string | null): void;
+  setPendingFollowUp(text: string | null): void;
+  setPauseReason(r: "user" | "idle" | null): void;
+  incrementIdleCycles(): void;
+  resetIdleCycles(): void;
+  setResearchQuery(q: string | null): void;
   reset(): void;
 }
 
@@ -41,6 +54,12 @@ const initial = {
   lastError: null,
   rateLimitUntil: null,
   done: false,
+  clarificationContext: "",
+  lastProcessedHash: null as string | null,
+  pendingFollowUp: null as string | null,
+  pauseReason: null as "user" | "idle" | null,
+  idleCycles: 0,
+  researchQuery: null as string | null,
 };
 
 export const useSession = create<SessionState>((set) => ({
@@ -58,5 +77,12 @@ export const useSession = create<SessionState>((set) => ({
   setError: (message) => set({ lastError: message }),
   setRateLimit: (until) => set({ rateLimitUntil: until }),
   setDone: (done) => set({ done }),
+  setClarificationContext: (ctx) => set({ clarificationContext: ctx }),
+  setLastProcessedHash: (h) => set({ lastProcessedHash: h }),
+  setPendingFollowUp: (text) => set({ pendingFollowUp: text }),
+  setPauseReason: (r) => set({ pauseReason: r }),
+  incrementIdleCycles: () => set((s) => ({ idleCycles: s.idleCycles + 1 })),
+  resetIdleCycles: () => set({ idleCycles: 0 }),
+  setResearchQuery: (q) => set({ researchQuery: q }),
   reset: () => set({ ...initial }),
 }));
