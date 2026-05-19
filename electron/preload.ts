@@ -7,6 +7,7 @@ import type {
   DisplayInfo,
   InstructionResponse,
   Settings,
+  TtsVoiceId,
 } from "./types";
 
 export interface SightLineApi {
@@ -55,7 +56,10 @@ export interface SightLineApi {
     openExternal(url: string): Promise<void>;
   };
   tts: {
-    speak(text: string): Promise<
+    speak(
+      text: string,
+      voice?: TtsVoiceId,
+    ): Promise<
       | { audioBase64: string }
       | { __error: "missing_openai_key" }
       | { __error: "request_failed"; message: string }
@@ -105,7 +109,7 @@ const api: SightLineApi = {
       ipcRenderer.invoke("window:open-external", { url }),
   },
   tts: {
-    speak: (text) => ipcRenderer.invoke("tts:speak", { text }),
+    speak: (text, voice) => ipcRenderer.invoke("tts:speak", { text, voice }),
   },
   overlay: {
     showGlow: (displayId) => ipcRenderer.invoke("overlay:show-glow", { displayId }),

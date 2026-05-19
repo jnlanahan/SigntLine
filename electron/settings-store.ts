@@ -9,6 +9,7 @@ const DEFAULTS: Settings = {
   selectedDisplayId: null,
   hasSeenPrivacyNotice: false,
   ttsEnabled: false,
+  ttsVoice: "nova",
 };
 
 function settingsPath(): string {

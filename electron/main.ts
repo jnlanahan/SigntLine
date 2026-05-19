@@ -26,7 +26,7 @@ import {
   RateLimitError,
 } from "./claude";
 import { MissingOpenAIKeyError, transcribe } from "./whisper";
-import { speakText } from "./openai-tts";
+import { speakText, type TtsVoice } from "./openai-tts";
 import type { CaptureFrame, ConversationTurn } from "./types";
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || "http://localhost:5173";
@@ -321,9 +321,12 @@ function registerIpc() {
 
   ipcMain.handle(
     "tts:speak",
-    async (_e: IpcMainInvokeEvent, payload: { text: string }) => {
+    async (
+      _e: IpcMainInvokeEvent,
+      payload: { text: string; voice?: TtsVoice },
+    ) => {
       try {
-        const buffer = await speakText(payload.text);
+        const buffer = await speakText(payload.text, { voice: payload.voice });
         return { audioBase64: buffer.toString("base64") };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

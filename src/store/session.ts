@@ -23,6 +23,14 @@ export interface SessionState {
   idleCycles: number;
   researchQuery: string | null;
 
+  // After Claude responds we wait at least this long before re-checking the
+  // screen, so the user has time to actually take action.
+  cooldownUntil: number | null;
+  // Used to avoid speaking / re-rendering the same instruction back-to-back.
+  lastSpokenInstruction: string | null;
+  // Time of the last assistant response, used to time waiting nudges.
+  lastInstructionAt: number | null;
+
   setStatus(s: SessionStatus): void;
   setGoal(goal: string): void;
   setInstruction(text: string): void;
@@ -39,6 +47,9 @@ export interface SessionState {
   incrementIdleCycles(): void;
   resetIdleCycles(): void;
   setResearchQuery(q: string | null): void;
+  setCooldownUntil(t: number | null): void;
+  setLastSpokenInstruction(s: string | null): void;
+  setLastInstructionAt(t: number | null): void;
   reset(): void;
 }
 
@@ -60,6 +71,9 @@ const initial = {
   pauseReason: null as "user" | "idle" | null,
   idleCycles: 0,
   researchQuery: null as string | null,
+  cooldownUntil: null as number | null,
+  lastSpokenInstruction: null as string | null,
+  lastInstructionAt: null as number | null,
 };
 
 export const useSession = create<SessionState>((set) => ({
@@ -84,5 +98,8 @@ export const useSession = create<SessionState>((set) => ({
   incrementIdleCycles: () => set((s) => ({ idleCycles: s.idleCycles + 1 })),
   resetIdleCycles: () => set({ idleCycles: 0 }),
   setResearchQuery: (q) => set({ researchQuery: q }),
+  setCooldownUntil: (t) => set({ cooldownUntil: t }),
+  setLastSpokenInstruction: (s) => set({ lastSpokenInstruction: s }),
+  setLastInstructionAt: (t) => set({ lastInstructionAt: t }),
   reset: () => set({ ...initial }),
 }));
