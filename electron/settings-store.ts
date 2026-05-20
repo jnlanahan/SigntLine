@@ -4,7 +4,7 @@ import * as path from "node:path";
 import type { Settings } from "./types";
 
 const DEFAULTS: Settings = {
-  captureIntervalSec: 15,
+  captureIntervalSec: 5,
   opacity: 0.92,
   selectedDisplayId: null,
   hasSeenPrivacyNotice: false,

@@ -27,6 +27,7 @@ import {
 } from "./claude";
 import { MissingOpenAIKeyError, transcribe } from "./whisper";
 import { speakText, type TtsVoice } from "./openai-tts";
+import { hasGoogleCredentials, speakTextGoogle } from "./google-tts";
 import type { CaptureFrame, ConversationTurn } from "./types";
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || "http://localhost:5173";
@@ -49,6 +50,7 @@ function parseEnvFile(content: string): Record<string, string> {
 async function loadKeysFromEnv() {
   const envPaths = [
     path.join(process.cwd(), ".env"),
+    path.join(__dirname, "../.env"),
     path.join(app.getPath("userData"), ".env"),
   ];
   let envVars: Record<string, string> = {};
@@ -58,8 +60,17 @@ async function loadKeysFromEnv() {
       break;
     } catch { /* not found */ }
   }
-  if (envVars.ANTHROPIC_API_KEY) await setKey("anthropic", envVars.ANTHROPIC_API_KEY);
-  if (envVars.OPENAI_API_KEY) await setKey("openai", envVars.OPENAI_API_KEY);
+  if (envVars.ANTHROPIC_API_KEY) {
+    await setKey("anthropic", envVars.ANTHROPIC_API_KEY);
+    process.env.ANTHROPIC_API_KEY = envVars.ANTHROPIC_API_KEY;
+  }
+  if (envVars.OPENAI_API_KEY) {
+    await setKey("openai", envVars.OPENAI_API_KEY);
+    process.env.OPENAI_API_KEY = envVars.OPENAI_API_KEY;
+  }
+  if (envVars.GOOGLE_PROJECT_ID) process.env.GOOGLE_PROJECT_ID = envVars.GOOGLE_PROJECT_ID;
+  if (envVars.GOOGLE_CLIENT_EMAIL) process.env.GOOGLE_CLIENT_EMAIL = envVars.GOOGLE_CLIENT_EMAIL;
+  if (envVars.GOOGLE_PRIVATE_KEY) process.env.GOOGLE_PRIVATE_KEY = envVars.GOOGLE_PRIVATE_KEY;
 }
 
 let mainWindow: BrowserWindow | null = null;
@@ -228,7 +239,7 @@ function registerIpc() {
   ipcMain.handle(
     "claude:next-instruction",
     async (
-      _e: IpcMainInvokeEvent,
+      e: IpcMainInvokeEvent,
       args: {
         goal: string;
         completedSteps: string[];
@@ -239,7 +250,11 @@ function registerIpc() {
       },
     ) => {
       try {
-        return await getNextInstruction(args);
+        return await getNextInstruction(args, (instruction) => {
+          if (!e.sender.isDestroyed()) {
+            e.sender.send("claude:instruction-ready", instruction);
+          }
+        });
       } catch (err) {
         if (err instanceof MissingApiKeyError) {
           return { __error: "missing_api_key" } as const;
@@ -320,17 +335,50 @@ function registerIpc() {
   });
 
   ipcMain.handle(
+    "research:search",
+    async (_e: IpcMainInvokeEvent, payload: { query: string }) => {
+      try {
+        const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(payload.query)}&format=json&no_html=1&skip_disambig=1`;
+        const resp = await fetch(url, { headers: { "User-Agent": "SightLine/0.1.0" } });
+        const data = await resp.json() as {
+          AbstractText?: string;
+          Answer?: string;
+          RelatedTopics?: Array<{ Text?: string } | { Topics?: unknown[] }>;
+        };
+        const parts: string[] = [];
+        if (data.Answer) parts.push(data.Answer);
+        if (data.AbstractText) parts.push(data.AbstractText);
+        if (Array.isArray(data.RelatedTopics)) {
+          for (const t of data.RelatedTopics.slice(0, 5)) {
+            if ("Text" in t && t.Text) parts.push(t.Text);
+          }
+        }
+        return { text: parts.join("\n\n") };
+      } catch (err) {
+        return { __error: "fetch_failed", message: String(err) };
+      }
+    },
+  );
+
+  ipcMain.handle(
     "tts:speak",
     async (
       _e: IpcMainInvokeEvent,
       payload: { text: string; voice?: TtsVoice },
     ) => {
       try {
-        const buffer = await speakText(payload.text, { voice: payload.voice });
+        let buffer: Buffer;
+        if (hasGoogleCredentials()) {
+          console.log("[SightLine TTS] Using Google Studio voice");
+          buffer = await speakTextGoogle(payload.text, payload.voice);
+        } else {
+          console.log("[SightLine TTS] Using OpenAI voice");
+          buffer = await speakText(payload.text, { voice: payload.voice });
+        }
         return { audioBase64: buffer.toString("base64") };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes("missing_openai_key")) {
+        if (msg.includes("missing_openai_key") || msg.includes("missing_google_credentials")) {
           return { __error: "missing_openai_key" } as const;
         }
         return { __error: "request_failed", message: msg } as const;

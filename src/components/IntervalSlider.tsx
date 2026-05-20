@@ -9,7 +9,7 @@ export function IntervalSlider({ value, onChange }: Props) {
       <span>Check every</span>
       <input
         type="range"
-        min={5}
+        min={2}
         max={60}
         step={1}
         value={value}

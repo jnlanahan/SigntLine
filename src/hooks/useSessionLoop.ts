@@ -6,18 +6,17 @@ import { hashFrame, hashesAreSimilar } from "../lib/frameHash";
 import {
   useTts,
   randomWaitingPhrase,
-  randomScreenChangePhrase,
   randomCompletionPhrase,
 } from "./useTts";
 
 const RETRY_DELAY_MS = 10_000;
-// Number of consecutive idle ticks before SightLine quietly pauses itself.
-const IDLE_CYCLE_THRESHOLD = 2;
 // Minimum time we'll wait after an instruction before re-evaluating the
 // screen — gives the user room to actually do the thing.
-const POST_INSTRUCTION_COOLDOWN_MS = 4000;
-// After this much idle time we speak a single soft "still here" nudge.
-const WAITING_NUDGE_DELAY_MS = 28_000;
+const POST_INSTRUCTION_COOLDOWN_MS = 2000;
+// How long after an instruction before we speak the first waiting nudge.
+const WAITING_NUDGE_DELAY_MS = 15_000;
+// How often we repeat nudges while the user is idle.
+const NUDGE_REPEAT_INTERVAL_MS = 30_000;
 
 function instructionsAreSimilar(a: string, b: string): boolean {
   const norm = (s: string) =>
@@ -29,14 +28,11 @@ function instructionsAreSimilar(a: string, b: string): boolean {
   const na = norm(a);
   const nb = norm(b);
   if (!na || !nb) return false;
-  // Only treat as duplicate when the normalized text matches exactly —
-  // anything else (an elaboration, a clarification) deserves to be shown.
   return na === nb;
 }
 
 export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
   const timerRef = useRef<number | null>(null);
-  const peekTimerRef = useRef<number | null>(null);
   const nudgeTimerRef = useRef<number | null>(null);
   const inFlightRef = useRef(false);
   const tickRef = useRef<() => Promise<void>>(async () => {});
@@ -88,21 +84,12 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
       const hasPendingFollowUp = Boolean(useSession.getState().pendingFollowUp);
 
       if (!screenChanged && !hasPendingFollowUp) {
-        useSession.getState().incrementIdleCycles();
-        const idleCycles = useSession.getState().idleCycles;
-        if (idleCycles >= IDLE_CYCLE_THRESHOLD) {
-          useSession.getState().setStatus("paused");
-          useSession.getState().setPauseReason("idle");
-        }
+        // Nothing to act on — stay in watching state and keep polling.
         return;
       }
 
-      useSession.getState().resetIdleCycles();
-
       // 3. Ask Claude. We deliberately do NOT cancel any in-flight TTS here
-      //    — the peek phrase ("Got it, let me see where you're at") should
-      //    keep playing while Claude thinks. The new instruction's speak()
-      //    call below will preempt it cleanly if needed.
+      //    — the peek phrase should keep playing while Claude thinks.
       useSession.getState().setStatus("thinking");
       const s = useSession.getState();
 
@@ -112,6 +99,17 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
         useSession.getState().setPendingFollowUp(null);
       }
 
+      // Subscribe to early instruction event — fires as soon as the instruction
+      // field is complete in the Claude stream, before the full JSON arrives.
+      let earlySpoken = false;
+      const unsubEarly = api().claude.onInstructionReady((earlyText) => {
+        const ttsOn = useSettings.getState().settings?.ttsEnabled;
+        if (ttsOn) {
+          speakRef.current(earlyText);
+          earlySpoken = true;
+        }
+      });
+
       const result = await api().claude.nextInstruction({
         goal: s.goal!,
         completedSteps: s.completedSteps,
@@ -120,6 +118,7 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
         followUp,
         clarificationContext: s.clarificationContext,
       });
+      unsubEarly();
 
       // Handle error envelope
       if (result && typeof result === "object" && "__error" in result) {
@@ -160,7 +159,6 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
         result.instruction &&
         instructionsAreSimilar(result.instruction, lastSpoken ?? "");
 
-      // Always record the latest snapshot of completed steps + screen state.
       useSession.getState().setCompletedSteps(result.completedSteps);
       useSession.getState().setDone(result.done);
       useSession.getState().setLastProcessedHash(newHash);
@@ -178,23 +176,35 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
         const ttsEnabled = useSettings.getState().settings?.ttsEnabled;
         if (ttsEnabled) {
           if (result.done) {
+            // Always speak completion phrase — not sent via early event.
             speakRef.current(
               `${result.instruction} ${randomCompletionPhrase()}`,
             );
-          } else {
+          } else if (!earlySpoken) {
+            // Only speak if the early stream event didn't already trigger TTS.
             speakRef.current(result.instruction);
           }
         }
       }
 
-      // Research signal
+      // Research signal — auto-fetch and resume without user intervention
       if (result.needsResearch && result.researchQuery) {
-        useSession.getState().setResearchQuery(result.researchQuery);
+        const query = result.researchQuery;
+        useSession.getState().setResearchQuery(query);
         useSession.getState().setStatus("researching");
-        useSession.getState().setPauseReason("user");
-        void api().window.openExternal(
-          `https://www.google.com/search?q=${encodeURIComponent(result.researchQuery)}`,
-        );
+
+        void (async () => {
+          const research = await api().research.search(query);
+          if (!("__error" in research) && research.text) {
+            const ctx = useSession.getState().clarificationContext ?? "";
+            const addition = `[Research: "${query}"]\n${research.text}`;
+            useSession
+              .getState()
+              .setClarificationContext(ctx ? `${ctx}\n\n${addition}` : addition);
+          }
+          useSession.getState().setStatus("watching");
+        })();
+
         return;
       }
 
@@ -228,7 +238,7 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
       void tickRef.current();
       timerRef.current = window.setInterval(
         () => void tickRef.current(),
-        Math.max(5, intervalSec) * 1000,
+        Math.max(2, intervalSec) * 1000,
       );
     }
     function stop() {
@@ -253,89 +263,46 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
     };
   }, [settings?.captureIntervalSec]);
 
-  // Peek interval — fires during idle auto-pause, auto-resumes when screen
-  // changes. This is where the "Got it, taking a look" phrase happens.
+  // Waiting nudge: after WAITING_NUDGE_DELAY_MS of no new instruction, speak
+  // a gentle phrase. Repeats every NUDGE_REPEAT_INTERVAL_MS so the user
+  // knows SightLine is still present.
   useEffect(() => {
-    function startPeek() {
-      if (peekTimerRef.current !== null) return;
-      peekTimerRef.current = window.setInterval(async () => {
-        const s = useSession.getState();
-        if (s.status !== "paused" || s.pauseReason !== "idle") {
-          stopPeek();
-          return;
-        }
-        const displayId =
-          useSettings.getState().settings?.selectedDisplayId ?? null;
-        try {
-          const frame = await api().capture.once(displayId);
-          const newHash = await hashFrame(frame.dataUrl);
-          if (!hashesAreSimilar(newHash, s.lastProcessedHash ?? "")) {
-            if (useSettings.getState().settings?.ttsEnabled) {
-              speakRef.current(randomScreenChangePhrase());
-            }
-            useSession.getState().setPauseReason(null);
-            useSession.getState().resetIdleCycles();
-            useSession.getState().setStatus("watching");
-          }
-        } catch {
-          // ignore capture errors during peek
-        }
-      }, Math.max(6, settings?.captureIntervalSec ?? 15) * 1000);
-    }
-    function stopPeek() {
-      if (peekTimerRef.current !== null) {
-        window.clearInterval(peekTimerRef.current);
-        peekTimerRef.current = null;
-      }
-    }
+    let lastNudgeAt: number | null = null;
 
-    const unsub = useSession.subscribe((state, prev) => {
+    nudgeTimerRef.current = window.setInterval(() => {
+      const s = useSession.getState();
+      const ttsEnabled = useSettings.getState().settings?.ttsEnabled;
+      if (!ttsEnabled) return;
+      if (!s.lastInstructionAt) return;
       if (
-        state.status === prev.status &&
-        state.pauseReason === prev.pauseReason
+        s.status === "thinking" ||
+        s.status === "error" ||
+        s.status === "waiting" ||
+        s.status === "paused"
       )
         return;
-      if (state.status === "paused" && state.pauseReason === "idle") startPeek();
-      else stopPeek();
-    });
+
+      const elapsed = Date.now() - s.lastInstructionAt;
+      if (elapsed < WAITING_NUDGE_DELAY_MS) return;
+
+      // Reset nudge tracking when a new instruction has come in.
+      if (lastNudgeAt !== null && lastNudgeAt < s.lastInstructionAt) {
+        lastNudgeAt = null;
+      }
+
+      // Don't nudge more often than NUDGE_REPEAT_INTERVAL_MS.
+      if (lastNudgeAt !== null && Date.now() - lastNudgeAt < NUDGE_REPEAT_INTERVAL_MS)
+        return;
+
+      lastNudgeAt = Date.now();
+      speakRef.current(randomWaitingPhrase());
+    }, 4000);
 
     return () => {
-      unsub();
-      stopPeek();
-    };
-  }, [settings?.captureIntervalSec]);
-
-  // Soft waiting nudge: when the user has been idle for a long time after an
-  // instruction, speak ONE gentle phrase. Never chained, never repeated.
-  useEffect(() => {
-    let spokenForInstructionAt: number | null = null;
-
-    function clearNudge() {
       if (nudgeTimerRef.current !== null) {
         window.clearInterval(nudgeTimerRef.current);
         nudgeTimerRef.current = null;
       }
-    }
-
-    function startNudge() {
-      clearNudge();
-      nudgeTimerRef.current = window.setInterval(() => {
-        const s = useSession.getState();
-        const ttsEnabled = useSettings.getState().settings?.ttsEnabled;
-        if (!ttsEnabled) return;
-        if (!s.lastInstructionAt) return;
-        if (s.status === "thinking" || s.status === "error") return;
-        if (s.status === "waiting") return; // task done
-        if (spokenForInstructionAt === s.lastInstructionAt) return;
-        const elapsed = Date.now() - s.lastInstructionAt;
-        if (elapsed >= WAITING_NUDGE_DELAY_MS) {
-          spokenForInstructionAt = s.lastInstructionAt;
-          speakRef.current(randomWaitingPhrase());
-        }
-      }, 4000);
-    }
-
-    startNudge();
-    return clearNudge;
+    };
   }, []);
 }

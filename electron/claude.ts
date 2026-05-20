@@ -58,6 +58,9 @@ export interface NextInstructionArgs {
 
 export async function getNextInstruction(
   args: NextInstructionArgs,
+  // Optional: called as soon as the instruction field is extracted from the
+  // stream, before the full JSON is parsed — lets the caller start TTS early.
+  onInstructionReady?: (instruction: string) => void,
 ): Promise<InstructionResponse> {
   const apiKey = await getKey("anthropic");
   if (!apiKey) throw new MissingApiKeyError();
@@ -103,13 +106,38 @@ export async function getNextInstruction(
     { role: "user", content: userBlocks },
   ];
 
+  // Regex to capture the instruction field value as it accumulates in the stream.
+  const instructionRe = /"instruction"\s*:\s*"((?:[^"\\]|\\.)*)"/;
+  let earlyFired = false;
+
   try {
-    const resp = await client.messages.create({
+    const stream = client.messages.stream({
       model: MODEL,
       max_tokens: MAX_TOKENS,
       system: SYSTEM_PROMPT,
       messages,
     });
+
+    let accumulated = "";
+    for await (const chunk of stream) {
+      if (
+        chunk.type === "content_block_delta" &&
+        chunk.delta.type === "text_delta"
+      ) {
+        accumulated += chunk.delta.text;
+        if (!earlyFired && onInstructionReady) {
+          const m = instructionRe.exec(accumulated);
+          if (m) {
+            earlyFired = true;
+            // Unescape JSON string escapes in the captured value.
+            const early = m[1].replace(/\\n/g, " ").replace(/\\(.)/g, "$1");
+            onInstructionReady(early);
+          }
+        }
+      }
+    }
+
+    const resp = await stream.finalMessage();
     const text = extractText(resp);
     return parseInstruction(text, args.completedSteps);
   } catch (err: unknown) {

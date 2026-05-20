@@ -25,11 +25,19 @@ function writeStore(store: Record<string, string>): void {
   }
 }
 
+const ENV_VAR: Record<CredentialKey, string> = {
+  anthropic: "ANTHROPIC_API_KEY",
+  openai: "OPENAI_API_KEY",
+};
+
 export async function getKey(name: CredentialKey): Promise<string | null> {
   try {
     const store = readStore();
     const encrypted = store[name];
-    if (!encrypted) return null;
+    if (!encrypted) {
+      const envVal = process.env[ENV_VAR[name]]?.trim();
+      return envVal || null;
+    }
     const buf = Buffer.from(encrypted, "base64");
     if (safeStorage.isEncryptionAvailable()) {
       return safeStorage.decryptString(buf);

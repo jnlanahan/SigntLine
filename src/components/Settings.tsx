@@ -3,7 +3,7 @@ import { useSettings } from "../store/settings";
 import { api } from "../lib/api";
 import type { DisplayInfo, TtsVoiceId } from "../lib/api";
 import { IntervalSlider } from "./IntervalSlider";
-import { useTts } from "../hooks/useTts";
+import { useTts, getTtsMode } from "../hooks/useTts";
 
 const VOICE_OPTIONS: { id: TtsVoiceId; label: string; sample: string }[] = [
   { id: "nova", label: "Nova — warm, friendly (default)", sample: "Hey, I'm Nova. Ready when you are." },
@@ -184,8 +184,8 @@ export function Settings({ onClose }: Props) {
           </p>
           <p className="text-[10px] text-neutral-500">
             {keyStatus.openai
-              ? "Uses OpenAI's natural voice"
-              : "Add an OpenAI key for the natural voice"}
+              ? "Using OpenAI's natural voice"
+              : "Add an OpenAI API key above for the natural voice"}
           </p>
         </div>
         <button
@@ -219,7 +219,21 @@ function VoicePicker({ disabled }: { disabled: boolean }) {
   const settings = useSettings((s) => s.settings);
   const patch = useSettings((s) => s.patch);
   const { speak } = useTts();
+  const [previewResult, setPreviewResult] = useState<
+    "openai" | "system" | "none" | "pending" | null
+  >(null);
+
   if (!settings) return null;
+
+  function handlePreview() {
+    const opt = VOICE_OPTIONS.find((v) => v.id === settings!.ttsVoice) ?? VOICE_OPTIONS[0];
+    setPreviewResult("pending");
+    speak(opt.sample);
+    window.setTimeout(() => {
+      setPreviewResult(getTtsMode() ?? "none");
+    }, 2500);
+  }
+
   return (
     <section className="flex flex-col gap-1.5">
       <label className="text-[11px] uppercase tracking-wide text-neutral-400">
@@ -241,17 +255,25 @@ function VoicePicker({ disabled }: { disabled: boolean }) {
         </select>
         <button
           type="button"
-          disabled={disabled}
-          onClick={() => {
-            const opt = VOICE_OPTIONS.find((v) => v.id === settings.ttsVoice);
-            if (opt) speak(opt.sample);
-          }}
-          className="rounded-md border border-panel-border bg-black/30 px-2 py-1 text-xs text-neutral-200 hover:bg-black/50 disabled:opacity-40"
+          onClick={handlePreview}
+          className="rounded-md border border-panel-border bg-black/30 px-2 py-1 text-xs text-neutral-200 hover:bg-black/50"
           title="Preview voice"
         >
           ▶ Preview
         </button>
       </div>
+      {previewResult === "pending" && (
+        <p className="text-[10px] text-neutral-400">Testing…</p>
+      )}
+      {previewResult === "openai" && (
+        <p className="text-[10px] text-watching">✓ Natural voice (OpenAI) — working</p>
+      )}
+      {previewResult === "system" && (
+        <p className="text-[10px] text-yellow-400">⚠ System voice only — enter your OpenAI key above for the natural voice</p>
+      )}
+      {previewResult === "none" && (
+        <p className="text-[10px] text-error">✗ No audio — check audio permissions or your API key</p>
+      )}
     </section>
   );
 }

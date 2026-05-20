@@ -1,11 +1,6 @@
 import OpenAI from "openai";
 import { getKey } from "./credentials";
 
-const TONE_INSTRUCTIONS =
-  "Speak in a warm, natural, conversational tone — like a friendly mentor sitting next to the user. " +
-  "Use easy pacing with brief, human pauses between thoughts. Sound encouraging and genuine, never robotic or formal. " +
-  "Vary your intonation; let small interjections like 'okay', 'so', or 'alright' feel relaxed.";
-
 export type TtsVoice =
   | "alloy"
   | "echo"
@@ -16,8 +11,26 @@ export type TtsVoice =
   | "coral"
   | "sage";
 
+type SupportedVoice = "alloy" | "echo" | "fable" | "nova" | "onyx" | "shimmer";
+
 export interface SpeakOptions {
   voice?: TtsVoice;
+}
+
+const TONE_INSTRUCTIONS =
+  "Speak with warmth and genuine enthusiasm. Be encouraging and upbeat. " +
+  "Vary your pacing naturally like a friendly human coach sitting next to the user. " +
+  "Let small interjections feel relaxed and human, not robotic or formal.";
+
+function toSupportedVoice(voice: TtsVoice): SupportedVoice {
+  switch (voice) {
+    case "coral":
+      return "shimmer";
+    case "sage":
+      return "nova";
+    default:
+      return voice;
+  }
 }
 
 export async function speakText(
@@ -28,49 +41,31 @@ export async function speakText(
   if (!apiKey) throw new Error("missing_openai_key");
 
   const client = new OpenAI({ apiKey });
-  const voice = opts.voice ?? "nova";
+  const voice = toSupportedVoice(opts.voice ?? "nova");
 
-  // Prefer the newer gpt-4o-mini-tts model, which accepts free-form tone
-  // instructions and sounds noticeably more human. Fall back to tts-1-hd
-  // if the account doesn't have access yet.
+  // Try the expressive model first — it accepts tone instructions and sounds
+  // noticeably more human. Falls back to tts-1-hd if the account lacks access.
   try {
-    const response = await (client.audio.speech.create as unknown as (
-      p: Record<string, unknown>,
-    ) => Promise<Response>)({
-      model: "gpt-4o-mini-tts",
+    const response = await client.audio.speech.create({
+      model: "gpt-4o-mini-tts" as "tts-1-hd",
       voice,
       input: text,
       response_format: "mp3",
+      // @ts-expect-error - instructions param not yet in SDK types
       instructions: TONE_INSTRUCTIONS,
     });
     return Buffer.from(await response.arrayBuffer());
   } catch (err) {
     const status = (err as { status?: number })?.status;
-    // 404 / 400 / model_not_found → fall back to the widely-available HD model.
-    if (status === 404 || status === 400) {
+    if (status === 404 || status === 400 || status === 422) {
       const response = await client.audio.speech.create({
         model: "tts-1-hd",
-        voice: coerceToLegacyVoice(voice),
+        voice,
         input: text,
         response_format: "mp3",
       });
       return Buffer.from(await response.arrayBuffer());
     }
     throw err;
-  }
-}
-
-// tts-1-hd doesn't accept the newer voices ("coral", "sage"). Map them to
-// the closest classic voice so the fallback still works.
-function coerceToLegacyVoice(
-  voice: TtsVoice,
-): "alloy" | "echo" | "fable" | "nova" | "onyx" | "shimmer" {
-  switch (voice) {
-    case "coral":
-      return "shimmer";
-    case "sage":
-      return "nova";
-    default:
-      return voice;
   }
 }

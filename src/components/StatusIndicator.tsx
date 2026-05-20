@@ -8,7 +8,7 @@ interface Props {
 const LABELS: Record<SessionStatus, string> = {
   idle: "Idle",
   watching: "Active",
-  thinking: "Thinking",
+  thinking: "Active",
   waiting: "Done",
   paused: "Paused",
   error: "Error",
@@ -19,7 +19,7 @@ const LABELS: Record<SessionStatus, string> = {
 const COLORS: Record<SessionStatus, string> = {
   idle: "bg-waiting",
   watching: "bg-watching",
-  thinking: "bg-thinking",
+  thinking: "bg-watching",
   waiting: "bg-watching",
   paused: "bg-waiting",
   error: "bg-error",

@@ -43,6 +43,7 @@ export interface SightLineApi {
     getClarifications(args: { goal: string }): Promise<
       ClarificationResponse | { __error: string; message?: string }
     >;
+    onInstructionReady(cb: (text: string) => void): () => void;
   };
   whisper: {
     transcribe(args: {
@@ -64,6 +65,9 @@ export interface SightLineApi {
       | { __error: "missing_openai_key" }
       | { __error: "request_failed"; message: string }
     >;
+  };
+  research: {
+    search(query: string): Promise<{ text: string } | { __error: string; message?: string }>;
   };
   overlay: {
     showGlow(displayId: string | null): Promise<void>;
@@ -96,6 +100,11 @@ const api: SightLineApi = {
       ipcRenderer.invoke("claude:next-instruction", args),
     getClarifications: (args) =>
       ipcRenderer.invoke("claude:get-clarifications", args),
+    onInstructionReady: (cb) => {
+      const handler = (_: Electron.IpcRendererEvent, text: string) => cb(text);
+      ipcRenderer.on("claude:instruction-ready", handler);
+      return () => ipcRenderer.removeListener("claude:instruction-ready", handler);
+    },
   },
   whisper: {
     transcribe: (args) => ipcRenderer.invoke("whisper:transcribe", args),
@@ -110,6 +119,9 @@ const api: SightLineApi = {
   },
   tts: {
     speak: (text, voice) => ipcRenderer.invoke("tts:speak", { text, voice }),
+  },
+  research: {
+    search: (query) => ipcRenderer.invoke("research:search", { query }),
   },
   overlay: {
     showGlow: (displayId) => ipcRenderer.invoke("overlay:show-glow", { displayId }),

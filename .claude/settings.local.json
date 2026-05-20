@@ -32,7 +32,11 @@
       "Bash(kill %bb5x6eae6)",
       "Bash(taskkill /F /IM electron.exe)",
       "Bash(npx electron *)",
-      "Bash(node scripts/run-electron.js)"
+      "Bash(node scripts/run-electron.js)",
+      "PowerShell(cd \"s:\\\\Vibe Coding Folder\\\\SigntLine\"; $env:ELECTRON_ENABLE_LOGGING=1; npm run dev 2>&1)",
+      "Bash(Get-ChildItem -Path \"S:\\\\Vibe Coding Folder\\\\SigntLine\\\\src\" -Recurse -Directory)",
+      "Bash(Select-Object -ExpandProperty Name)",
+      "Bash(npx kill-port *)"
     ]
   }
 }
