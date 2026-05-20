@@ -14,10 +14,11 @@ export const WAITING_PHRASES = [
 
 // Spoken on goal completion.
 export const COMPLETION_PHRASES = [
-  "Nice work — that's it, you're done.",
-  "And… you're all set. Great job.",
-  "Done deal. Nicely handled.",
-  "That's the whole task — well done.",
+  "And that's a wrap. Nice work.",
+  "Done. Not bad at all.",
+  "Nailed it — you're all set.",
+  "That's the whole thing. Well played.",
+  "Goal achieved. See? Wasn't so bad.",
 ];
 
 function pickRandom<T>(arr: readonly T[], avoid?: T): T {

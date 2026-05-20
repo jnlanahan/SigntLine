@@ -296,6 +296,12 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
 
       lastNudgeAt = Date.now();
       speakRef.current(randomWaitingPhrase());
+
+      // After nudging, force a Claude check on the next tick regardless of
+      // whether the screen hash changed — this is what "I'll be watching"
+      // actually means. Clear the hash so the tick treats the next frame as new.
+      useSession.getState().setLastProcessedHash(null);
+      void tickRef.current();
     }, 4000);
 
     return () => {

@@ -18,9 +18,9 @@ export interface SpeakOptions {
 }
 
 const TONE_INSTRUCTIONS =
-  "Speak with warmth and genuine enthusiasm. Be encouraging and upbeat. " +
-  "Vary your pacing naturally like a friendly human coach sitting next to the user. " +
-  "Let small interjections feel relaxed and human, not robotic or formal.";
+  "Speak with energy and a friendly edge — like a sharp, enthusiastic friend who actually knows what they're talking about. " +
+  "Be warm but direct. Vary your pacing and let a bit of personality come through. " +
+  "Not robotic, not overly peppy — just real and slightly quick-witted.";
 
 function toSupportedVoice(voice: TtsVoice): SupportedVoice {
   switch (voice) {

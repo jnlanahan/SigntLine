@@ -14,6 +14,7 @@ import { PrivacyNotice } from "./components/PrivacyNotice";
 import { Settings as SettingsView } from "./components/Settings";
 import { StatusIndicator } from "./components/StatusIndicator";
 import { CompletedSteps } from "./components/CompletedSteps";
+import { ConversationHistory } from "./components/ConversationHistory";
 
 type View = "panel" | "settings" | "privacy";
 
@@ -30,6 +31,7 @@ export default function App() {
   const setGoal = useSession((s) => s.setGoal);
   const appendTurn = useSession((s) => s.appendTurn);
   const researchQuery = useSession((s) => s.researchQuery);
+  const conversation = useSession((s) => s.conversation);
 
   const settings = useSettings((s) => s.settings);
   const keyStatus = useSettings((s) => s.keyStatus);
@@ -203,6 +205,7 @@ export default function App() {
                 researchQuery={researchQuery}
               />
               <CompletedSteps steps={completedSteps} />
+              <ConversationHistory turns={conversation} />
             </>
           )}
         </div>
