@@ -18,6 +18,12 @@ const WAITING_NUDGE_DELAY_MS = 15_000;
 // How often we repeat nudges while the user is idle.
 const NUDGE_REPEAT_INTERVAL_MS = 30_000;
 
+// Adaptive polling tiers
+const ALERT_INTERVAL_MS = 2_000;
+const ALERT_WINDOW_MS = 20_000;
+const IDLE_INTERVAL_MS = 30_000;
+const IDLE_TICK_THRESHOLD = 3;
+
 function instructionsAreSimilar(a: string, b: string): boolean {
   const norm = (s: string) =>
     s
@@ -84,9 +90,10 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
       const hasPendingFollowUp = Boolean(useSession.getState().pendingFollowUp);
 
       if (!screenChanged && !hasPendingFollowUp) {
-        // Nothing to act on — stay in watching state and keep polling.
+        useSession.getState().incrementIdleCycles();
         return;
       }
+      useSession.getState().resetIdleCycles();
 
       // 3. Ask Claude. We deliberately do NOT cancel any in-flight TTS here
       //    — the peek phrase should keep playing while Claude thinks.
@@ -172,6 +179,8 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
         });
         useSession.getState().setLastSpokenInstruction(result.instruction);
         useSession.getState().setLastInstructionAt(Date.now());
+        useSession.getState().setAfterInstructionAlertUntil(Date.now() + ALERT_WINDOW_MS);
+        useSession.getState().resetIdleCycles();
 
         const ttsEnabled = useSettings.getState().settings?.ttsEnabled;
         if (ttsEnabled) {
@@ -230,31 +239,57 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
     tickRef.current = tick;
   }, [tick]);
 
-  // Main capture interval — active only when status === "watching".
+  // Main capture loop — self-rescheduling setTimeout chain that adapts its
+  // delay based on session state (alert / normal / idle tiers).
   useEffect(() => {
+    let cancelled = false;
+
+    async function scheduledTick() {
+      if (cancelled) return;
+      if (useSession.getState().status !== "watching") return;
+
+      await tickRef.current();
+
+      if (cancelled) return;
+
+      const s = useSession.getState();
+      const now = Date.now();
+      let delayMs: number;
+
+      if (s.afterInstructionAlertUntil && now < s.afterInstructionAlertUntil) {
+        delayMs = ALERT_INTERVAL_MS;
+      } else if (s.idleCycles >= IDLE_TICK_THRESHOLD) {
+        delayMs = IDLE_INTERVAL_MS;
+      } else {
+        delayMs = Math.max(2, settings?.captureIntervalSec ?? 15) * 1000;
+      }
+
+      timerRef.current = window.setTimeout(scheduledTick, delayMs);
+    }
+
     function start() {
       if (timerRef.current !== null) return;
-      const intervalSec = settings?.captureIntervalSec ?? 15;
-      void tickRef.current();
-      timerRef.current = window.setInterval(
-        () => void tickRef.current(),
-        Math.max(2, intervalSec) * 1000,
-      );
+      void scheduledTick();
     }
+
     function stop() {
+      cancelled = true;
       if (timerRef.current !== null) {
-        window.clearInterval(timerRef.current);
+        window.clearTimeout(timerRef.current);
         timerRef.current = null;
       }
     }
 
     if (useSession.getState().status === "watching") start();
-    else stop();
 
     const unsub = useSession.subscribe((state, prev) => {
       if (state.status === prev.status) return;
-      if (state.status === "watching") start();
-      else stop();
+      if (state.status === "watching") {
+        cancelled = false;
+        start();
+      } else {
+        stop();
+      }
     });
 
     return () => {
@@ -310,5 +345,19 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
         nudgeTimerRef.current = null;
       }
     };
+  }, []);
+
+  // Input-triggered check: fire an immediate tick when the user clicks or
+  // stops typing, rather than waiting for the next scheduled poll.
+  // Suppressed during the alert window (20 s post-instruction) — the timer
+  // already runs at 2 s then, and allowing triggers would interrupt TTS.
+  useEffect(() => {
+    const unsub = api().input.onActivity(() => {
+      const s = useSession.getState();
+      if (s.status !== "watching") return;
+      if (s.afterInstructionAlertUntil && Date.now() < s.afterInstructionAlertUntil) return;
+      void tickRef.current();
+    });
+    return unsub;
   }, []);
 }

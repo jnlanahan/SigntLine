@@ -36,7 +36,17 @@
       "PowerShell(cd \"s:\\\\Vibe Coding Folder\\\\SigntLine\"; $env:ELECTRON_ENABLE_LOGGING=1; npm run dev 2>&1)",
       "Bash(Get-ChildItem -Path \"S:\\\\Vibe Coding Folder\\\\SigntLine\\\\src\" -Recurse -Directory)",
       "Bash(Select-Object -ExpandProperty Name)",
-      "Bash(npx kill-port *)"
+      "Bash(npx kill-port *)",
+      "Bash(Get-ChildItem -Path \"s:\\\\Vibe Coding Folder\\\\SigntLine\\\\Example Programs like this\\\\\" -Recurse -File | Select-Object -ExpandProperty FullName)",
+      "PowerShell(Get-ChildItem -Path \"s:\\\\Vibe Coding Folder\\\\SigntLine\\\\Example Programs like this\\\\\" -Recurse -File | ForEach-Object { $_.FullName })",
+      "Bash(git -C \"s:\\\\Vibe Coding Folder\\\\SigntLine\" log --oneline -20)",
+      "PowerShell(cd \"s:\\\\Vibe Coding Folder\\\\SigntLine\"; Get-ChildItem -Recurse -Depth 2 | Select-Object FullName | ForEach-Object { $_.FullName.Replace\\(\"s:\\\\Vibe Coding Folder\\\\SigntLine\\\\\", \"\"\\) } | Where-Object { $_ -notmatch \"^node_modules\" } | Sort-Object)",
+      "Bash(git checkout *)",
+      "Bash(echo \"PID: $!\")",
+      "PowerShell(Start-Process -FilePath \"cmd.exe\" -ArgumentList \"/c\", \"cd /d `\"s:\\\\Vibe Coding Folder\\\\SigntLine`\" && npm run dev\" -WindowStyle Normal)",
+      "Bash(Get-ChildItem -Path \"s:\\\\Vibe Coding Folder\\\\SigntLine\" -Depth 2)",
+      "Bash(Select-Object -Property FullName, PSIsContainer)",
+      "Bash(Format-Table -AutoSize)"
     ]
   }
 }

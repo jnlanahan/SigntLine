@@ -73,6 +73,9 @@ export interface SightLineApi {
     showGlow(displayId: string | null): Promise<void>;
     hideGlow(): Promise<void>;
   };
+  input: {
+    onActivity(cb: () => void): () => void;
+  };
   app: {
     quit(): Promise<void>;
   };
@@ -126,6 +129,13 @@ const api: SightLineApi = {
   overlay: {
     showGlow: (displayId) => ipcRenderer.invoke("overlay:show-glow", { displayId }),
     hideGlow: () => ipcRenderer.invoke("overlay:hide-glow"),
+  },
+  input: {
+    onActivity: (cb) => {
+      const handler = () => cb();
+      ipcRenderer.on("input:activity", handler);
+      return () => ipcRenderer.removeListener("input:activity", handler);
+    },
   },
   app: {
     quit: () => ipcRenderer.invoke("app:quit"),

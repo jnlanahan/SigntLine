@@ -29,6 +29,7 @@ import { MissingOpenAIKeyError, transcribe } from "./whisper";
 import { speakText, type TtsVoice } from "./openai-tts";
 import { hasGoogleCredentials, speakTextGoogle } from "./google-tts";
 import type { CaptureFrame, ConversationTurn } from "./types";
+import { uIOhook } from "uiohook-napi";
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || "http://localhost:5173";
 const isDev = !app.isPackaged;
@@ -75,6 +76,7 @@ async function loadKeysFromEnv() {
 
 let mainWindow: BrowserWindow | null = null;
 let glowWindow: BrowserWindow | null = null;
+let inputDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 const GLOW_HTML = `<!DOCTYPE html><html><head><style>
 *{margin:0;padding:0}
@@ -173,6 +175,11 @@ function createWindow() {
 
   mainWindow.on("closed", () => {
     hideGlowOverlay();
+    uIOhook.stop();
+    if (inputDebounceTimer) {
+      clearTimeout(inputDebounceTimer);
+      inputDebounceTimer = null;
+    }
     mainWindow = null;
   });
 }
@@ -181,6 +188,18 @@ app.whenReady().then(async () => {
   await loadKeysFromEnv();
   registerIpc();
   createWindow();
+
+  // Global input listener — debounced so rapid typing/clicking doesn't spam ticks
+  function scheduleInputTick() {
+    if (inputDebounceTimer) clearTimeout(inputDebounceTimer);
+    inputDebounceTimer = setTimeout(() => {
+      mainWindow?.webContents.send("input:activity");
+      inputDebounceTimer = null;
+    }, 750);
+  }
+  uIOhook.on("click", scheduleInputTick);
+  uIOhook.on("keyup", scheduleInputTick);
+  uIOhook.start();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

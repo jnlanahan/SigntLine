@@ -30,6 +30,7 @@ export interface SessionState {
   lastSpokenInstruction: string | null;
   // Time of the last assistant response, used to time waiting nudges.
   lastInstructionAt: number | null;
+  afterInstructionAlertUntil: number | null;
 
   setStatus(s: SessionStatus): void;
   setGoal(goal: string): void;
@@ -50,6 +51,7 @@ export interface SessionState {
   setCooldownUntil(t: number | null): void;
   setLastSpokenInstruction(s: string | null): void;
   setLastInstructionAt(t: number | null): void;
+  setAfterInstructionAlertUntil(t: number | null): void;
   reset(): void;
 }
 
@@ -74,6 +76,7 @@ const initial = {
   cooldownUntil: null as number | null,
   lastSpokenInstruction: null as string | null,
   lastInstructionAt: null as number | null,
+  afterInstructionAlertUntil: null as number | null,
 };
 
 export const useSession = create<SessionState>((set) => ({
@@ -101,5 +104,6 @@ export const useSession = create<SessionState>((set) => ({
   setCooldownUntil: (t) => set({ cooldownUntil: t }),
   setLastSpokenInstruction: (s) => set({ lastSpokenInstruction: s }),
   setLastInstructionAt: (t) => set({ lastInstructionAt: t }),
+  setAfterInstructionAlertUntil: (t) => set({ afterInstructionAlertUntil: t }),
   reset: () => set({ ...initial }),
 }));
