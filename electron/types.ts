@@ -34,6 +34,14 @@ export interface InstructionResponse {
   done: boolean;
   needsResearch: boolean;
   researchQuery: string;
+  // Durable memory the agent chooses to record (research findings, decisions,
+  // account/version details). Empty string when there's nothing new to note.
+  notes: string;
+}
+
+export interface UploadedContext {
+  name: string;
+  text: string;
 }
 
 export interface ClarificationResponse {
@@ -80,6 +88,7 @@ export type IpcChannel =
   | "keys:clear"
   | "displays:list"
   | "capture:once"
+  | "files:pick-context"
   | "claude:next-instruction"
   | "whisper:transcribe"
   | "window:set-opacity"

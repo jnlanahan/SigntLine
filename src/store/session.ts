@@ -3,6 +3,7 @@ import type {
   CaptureFrame,
   ConversationTurn,
   SessionStatus,
+  UploadedContext,
 } from "../lib/api";
 
 export interface SessionState {
@@ -17,6 +18,11 @@ export interface SessionState {
   done: boolean;
 
   clarificationContext: string;
+  // User-attached reference material (text/markdown), in-session only.
+  uploadedContext: string;
+  attachedFileNames: string[];
+  // Durable notes the agent recorded this session, oldest to newest.
+  agentNotes: string[];
   lastProcessedHash: string | null;
   pendingFollowUp: string | null;
   pauseReason: "user" | "idle" | null;
@@ -42,6 +48,8 @@ export interface SessionState {
   setRateLimit(until: number | null): void;
   setDone(done: boolean): void;
   setClarificationContext(ctx: string): void;
+  addUploadedContext(files: UploadedContext[]): void;
+  appendAgentNote(note: string): void;
   setLastProcessedHash(h: string | null): void;
   setPendingFollowUp(text: string | null): void;
   setPauseReason(r: "user" | "idle" | null): void;
@@ -68,6 +76,9 @@ const initial = {
   rateLimitUntil: null,
   done: false,
   clarificationContext: "",
+  uploadedContext: "",
+  attachedFileNames: [] as string[],
+  agentNotes: [] as string[],
   lastProcessedHash: null as string | null,
   pendingFollowUp: null as string | null,
   pauseReason: null as "user" | "idle" | null,
@@ -95,6 +106,27 @@ export const useSession = create<SessionState>((set) => ({
   setRateLimit: (until) => set({ rateLimitUntil: until }),
   setDone: (done) => set({ done }),
   setClarificationContext: (ctx) => set({ clarificationContext: ctx }),
+  addUploadedContext: (files) =>
+    set((state) => {
+      const additions = files
+        .map((f) => `--- ${f.name} ---\n${f.text}`)
+        .join("\n\n");
+      return {
+        uploadedContext: state.uploadedContext
+          ? `${state.uploadedContext}\n\n${additions}`
+          : additions,
+        attachedFileNames: [
+          ...state.attachedFileNames,
+          ...files.map((f) => f.name),
+        ],
+      };
+    }),
+  appendAgentNote: (note) =>
+    set((state) =>
+      state.agentNotes.includes(note)
+        ? state
+        : { agentNotes: [...state.agentNotes, note] },
+    ),
   setLastProcessedHash: (h) => set({ lastProcessedHash: h }),
   setPendingFollowUp: (text) => set({ pendingFollowUp: text }),
   setPauseReason: (r) => set({ pauseReason: r }),

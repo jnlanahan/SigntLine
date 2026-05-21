@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  dialog,
   ipcMain,
   screen,
   shell,
@@ -28,7 +29,7 @@ import {
 import { MissingOpenAIKeyError, transcribe } from "./whisper";
 import { speakText, type TtsVoice } from "./openai-tts";
 import { hasGoogleCredentials, speakTextGoogle } from "./google-tts";
-import type { CaptureFrame, ConversationTurn } from "./types";
+import type { CaptureFrame, ConversationTurn, UploadedContext } from "./types";
 import { uIOhook } from "uiohook-napi";
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || "http://localhost:5173";
@@ -255,6 +256,31 @@ function registerIpc() {
     },
   );
 
+  ipcMain.handle("files:pick-context", async (): Promise<UploadedContext[]> => {
+    if (!mainWindow) return [];
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: "Attach context",
+      properties: ["openFile", "multiSelections"],
+      filters: [
+        { name: "Text & Markdown", extensions: ["txt", "md", "markdown", "text"] },
+        { name: "All Files", extensions: ["*"] },
+      ],
+    });
+    if (result.canceled) return [];
+    const MAX_BYTES = 200_000;
+    const files: UploadedContext[] = [];
+    for (const filePath of result.filePaths) {
+      try {
+        const raw = fs.readFileSync(filePath, "utf-8");
+        const text = raw.length > MAX_BYTES ? raw.slice(0, MAX_BYTES) : raw;
+        files.push({ name: path.basename(filePath), text });
+      } catch (err) {
+        console.error("[files] failed to read", filePath, err);
+      }
+    }
+    return files;
+  });
+
   ipcMain.handle(
     "claude:next-instruction",
     async (
@@ -266,6 +292,8 @@ function registerIpc() {
         frames: CaptureFrame[];
         followUp?: string;
         clarificationContext?: string;
+        uploadedContext?: string;
+        agentNotes?: string[];
       },
     ) => {
       try {

@@ -27,6 +27,13 @@ textarea {
   user-select: text;
 }
 
+/* Regions whose text the user should be able to select and copy (chat, etc). */
+.sl-selectable,
+.sl-selectable * {
+  user-select: text;
+  cursor: text;
+}
+
 /* Custom scrollbar inside panel */
 .sl-scroll::-webkit-scrollbar {
   width: 6px;

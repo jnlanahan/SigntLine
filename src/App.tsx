@@ -32,6 +32,8 @@ export default function App() {
   const appendTurn = useSession((s) => s.appendTurn);
   const researchQuery = useSession((s) => s.researchQuery);
   const conversation = useSession((s) => s.conversation);
+  const attachedFileNames = useSession((s) => s.attachedFileNames);
+  const agentNotes = useSession((s) => s.agentNotes);
 
   const settings = useSettings((s) => s.settings);
   const keyStatus = useSettings((s) => s.keyStatus);
@@ -138,6 +140,13 @@ export default function App() {
     }
   }
 
+  async function attachContext() {
+    const files = await api().files.pickContext();
+    if (files.length > 0) {
+      useSession.getState().addUploadedContext(files);
+    }
+  }
+
   const lastFrame = frames.length > 0 ? frames[frames.length - 1] : null;
 
   if (view === "privacy") {
@@ -197,6 +206,11 @@ export default function App() {
                 <p className="text-[10px] uppercase tracking-wide text-neutral-500">Goal</p>
                 <p className="text-xs text-neutral-200">{goal}</p>
               </div>
+              <ContextPanel
+                fileNames={attachedFileNames}
+                notes={agentNotes}
+                onAttach={attachContext}
+              />
               <Instruction
                 instruction={instruction}
                 status={status}
@@ -239,6 +253,63 @@ export default function App() {
         )}
       </div>
     </PanelShell>
+  );
+}
+
+function ContextPanel({
+  fileNames,
+  notes,
+  onAttach,
+}: {
+  fileNames: string[];
+  notes: string[];
+  onAttach(): void;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] uppercase tracking-wide text-neutral-500">Context</p>
+        <button
+          type="button"
+          onClick={onAttach}
+          className="no-drag rounded px-1.5 py-0.5 text-[11px] text-neutral-300 hover:bg-white/10"
+          title="Attach text or markdown files"
+        >
+          📎 Attach
+        </button>
+      </div>
+      {fileNames.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {fileNames.map((name, i) => (
+            <span
+              key={i}
+              className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-neutral-300"
+              title={name}
+            >
+              {name}
+            </span>
+          ))}
+        </div>
+      )}
+      {notes.length > 0 && (
+        <details className="group">
+          <summary className="cursor-pointer list-none text-[10px] uppercase tracking-wide text-neutral-500 hover:text-neutral-300">
+            <span className="group-open:hidden">▶ Notes ({notes.length})</span>
+            <span className="hidden group-open:inline">▼ Notes</span>
+          </summary>
+          <ul className="sl-selectable mt-1 flex max-h-32 flex-col gap-1 overflow-y-auto sl-scroll pr-0.5">
+            {notes.map((note, i) => (
+              <li
+                key={i}
+                className="rounded bg-accent/5 px-2 py-1 text-[11px] leading-snug text-neutral-300"
+              >
+                {note}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
   );
 }
 

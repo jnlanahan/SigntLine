@@ -28,12 +28,13 @@ Voice rules:
 
 Output rules:
 - Respond with a JSON object only, no prose around it, no code fences.
-- Schema: {"instruction": string, "completed_steps": string[], "done": boolean, "needsResearch": boolean, "researchQuery": string}
+- Schema: {"instruction": string, "completed_steps": string[], "done": boolean, "needsResearch": boolean, "researchQuery": string, "notes": string}
 - "instruction" is your next coaching message — 1-3 actions, conversational tone, under 80 words.
 - "completed_steps" is the full running list of steps already done, as short phrases (3-7 words each). Never duplicate.
 - "done" is true only when the user's stated goal is fully achieved.
 - "needsResearch" is true ONLY when you are genuinely blocked by lack of current documentation or external information you cannot infer from the screen. Set false otherwise.
-- "researchQuery" is a precise web search query string when needsResearch is true, otherwise empty string.`;
+- "researchQuery" is a precise web search query string when needsResearch is true, otherwise empty string.
+- "notes" is your private scratchpad memory. Record durable facts worth remembering across steps — research findings, the user's specific setup (account, version, folder), or decisions made. Keep each note to one short line. These notes are shown back to you on future turns. Use an empty string when there is nothing new to record; never repeat a note you already wrote.`;
 
 export class MissingApiKeyError extends Error {
   constructor() {
@@ -58,6 +59,10 @@ export interface NextInstructionArgs {
   frames: CaptureFrame[];
   followUp?: string;
   clarificationContext?: string;
+  // Reference material the user attached (text/markdown files).
+  uploadedContext?: string;
+  // Notes the agent recorded on previous turns, oldest to newest.
+  agentNotes?: string[];
 }
 
 export async function getNextInstruction(
@@ -170,6 +175,15 @@ function buildContextHeader(args: NextInstructionArgs, frameCount: number): stri
   if (args.clarificationContext && args.clarificationContext.trim().length > 0) {
     parts.push(`Answers to clarifying questions:\n${args.clarificationContext}`);
   }
+  if (args.uploadedContext && args.uploadedContext.trim().length > 0) {
+    parts.push(`Reference material the user attached:\n${args.uploadedContext.trim()}`);
+  }
+  if (args.agentNotes && args.agentNotes.length > 0) {
+    parts.push(
+      `Your notes so far (memory you recorded on earlier turns):\n` +
+        args.agentNotes.map((n) => `- ${n}`).join("\n"),
+    );
+  }
   const lastAssistant = [...args.conversation]
     .reverse()
     .find((t) => t.role === "assistant");
@@ -220,6 +234,7 @@ function parseInstruction(
         done?: boolean;
         needsResearch?: boolean;
         researchQuery?: string;
+        notes?: string;
       };
       return {
         instruction: (obj.instruction ?? "").trim() || text,
@@ -229,6 +244,7 @@ function parseInstruction(
         done: Boolean(obj.done),
         needsResearch: Boolean(obj.needsResearch),
         researchQuery: (obj.researchQuery ?? "").trim(),
+        notes: (obj.notes ?? "").trim(),
       };
     } catch {
       // fall through
@@ -241,6 +257,7 @@ function parseInstruction(
     done: false,
     needsResearch: false,
     researchQuery: "",
+    notes: "",
   };
 }
 
