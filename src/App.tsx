@@ -52,6 +52,15 @@ export default function App() {
     void loadSettings();
   }, [loadSettings]);
 
+  // The glow overlay can change the capture region on its own (the user drags
+  // it). Reload settings when that happens so the capture loop and Settings UI
+  // stay in sync.
+  useEffect(() => {
+    return api().overlay.onRegionUpdated(() => {
+      void loadSettings();
+    });
+  }, [loadSettings]);
+
   useEffect(() => {
     if (!settings) return;
     if (!settings.hasSeenPrivacyNotice) setView("privacy");
@@ -96,7 +105,6 @@ export default function App() {
     setGoal(g);
     appendTurn({ role: "user", content: `Goal: ${g}`, timestamp: Date.now() });
     setStatus("watching");
-    void api().overlay.showGlow(settings?.selectedDisplayId ?? null);
   }
 
   function pause() {
@@ -115,7 +123,6 @@ export default function App() {
     cancelTts();
     reset();
     setShowPeek(false);
-    void api().overlay.hideGlow();
   }
 
   function submitFollowUp(text: string) {

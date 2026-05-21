@@ -26,6 +26,11 @@ async function main() {
       entryPoints: ["electron/preload.ts"],
       outfile: "dist-electron/preload.mjs",
     }),
+    esbuild.build({
+      ...shared,
+      entryPoints: ["electron/glow-preload.ts"],
+      outfile: "dist-electron/glow-preload.mjs",
+    }),
   ]);
   console.log("Electron files built.");
 }

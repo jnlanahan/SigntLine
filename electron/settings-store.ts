@@ -7,6 +7,7 @@ const DEFAULTS: Settings = {
   captureIntervalSec: 5,
   opacity: 0.92,
   selectedDisplayId: null,
+  captureRegion: null,
   hasSeenPrivacyNotice: false,
   ttsEnabled: false,
   ttsVoice: "nova",

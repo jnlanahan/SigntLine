@@ -28,6 +28,15 @@ export interface CaptureFrame {
   height: number;
 }
 
+// A sub-region of a display to capture, in display-relative DIP coordinates
+// (origin at the display's top-left). null means capture the whole display.
+export interface CaptureRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface InstructionResponse {
   instruction: string;
   completedSteps: string[];
@@ -54,6 +63,7 @@ export interface Settings {
   captureIntervalSec: number;
   opacity: number;
   selectedDisplayId: string | null;
+  captureRegion: CaptureRegion | null;
   hasSeenPrivacyNotice: boolean;
   ttsEnabled: boolean;
   ttsVoice: TtsVoiceId;
@@ -88,5 +98,8 @@ export type IpcChannel =
   | "app:quit"
   | "overlay:show-glow"
   | "overlay:hide-glow"
+  | "overlay:set-adjust"
+  | "overlay:commit-region"
+  | "overlay:cancel-adjust"
   | "tts:speak"
   | "session:log";
