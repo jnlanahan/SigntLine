@@ -28,7 +28,7 @@ import {
 import { MissingOpenAIKeyError, transcribe } from "./whisper";
 import { speakText, type TtsVoice } from "./openai-tts";
 import { hasGoogleCredentials, speakTextGoogle } from "./google-tts";
-import type { CaptureFrame, ConversationTurn } from "./types";
+import type { AppMode, CaptureFrame, ConversationTurn } from "./types";
 import { uIOhook } from "uiohook-napi";
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || "http://localhost:5173";
@@ -260,6 +260,7 @@ function registerIpc() {
     async (
       e: IpcMainInvokeEvent,
       args: {
+        mode: AppMode;
         goal: string;
         completedSteps: string[];
         conversation: ConversationTurn[];
@@ -292,7 +293,7 @@ function registerIpc() {
 
   ipcMain.handle(
     "claude:get-clarifications",
-    async (_e: IpcMainInvokeEvent, args: { goal: string }) => {
+    async (_e: IpcMainInvokeEvent, args: { mode: AppMode; goal: string }) => {
       try {
         return await getClarifications(args);
       } catch (err) {

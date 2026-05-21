@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type {
+  AppMode,
   CaptureFrame,
   ConversationTurn,
   SessionStatus,
@@ -7,6 +8,7 @@ import type {
 
 export interface SessionState {
   status: SessionStatus;
+  mode: AppMode | null;
   goal: string | null;
   currentInstruction: string;
   completedSteps: string[];
@@ -33,6 +35,7 @@ export interface SessionState {
   afterInstructionAlertUntil: number | null;
 
   setStatus(s: SessionStatus): void;
+  setMode(mode: AppMode | null): void;
   setGoal(goal: string): void;
   setInstruction(text: string): void;
   setCompletedSteps(steps: string[]): void;
@@ -59,6 +62,7 @@ const MAX_FRAMES = 5;
 
 const initial = {
   status: "idle" as SessionStatus,
+  mode: null as AppMode | null,
   goal: null,
   currentInstruction: "",
   completedSteps: [] as string[],
@@ -82,6 +86,7 @@ const initial = {
 export const useSession = create<SessionState>((set) => ({
   ...initial,
   setStatus: (s) => set({ status: s }),
+  setMode: (mode) => set({ mode }),
   setGoal: (goal) => set({ goal }),
   setInstruction: (text) => set({ currentInstruction: text }),
   setCompletedSteps: (steps) => set({ completedSteps: steps }),

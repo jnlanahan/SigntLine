@@ -118,6 +118,7 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
       });
 
       const result = await api().claude.nextInstruction({
+        mode: s.mode ?? "tech_support",
         goal: s.goal!,
         completedSteps: s.completedSteps,
         conversation: s.conversation,
