@@ -278,6 +278,7 @@ export default function App() {
             </div>
             <FollowUpInput
               isThinking={status === "thinking"}
+              mode={mode}
               onSubmit={submitFollowUp}
             />
           </div>

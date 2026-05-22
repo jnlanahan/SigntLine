@@ -1,12 +1,20 @@
 import { useState } from "react";
 import { useVoice } from "../hooks/useVoice";
+import type { AppMode } from "../lib/api";
+
+const PLACEHOLDER: Record<AppMode, string> = {
+  tech_support: "Ask a follow-up or speak 🎤",
+  training: "Ask a question or say 'done' when the plan is complete",
+  teacher: "Ask a question or tell Claude what to explore next",
+};
 
 interface Props {
   isThinking: boolean;
+  mode: AppMode | null;
   onSubmit(text: string): void;
 }
 
-export function FollowUpInput({ isThinking, onSubmit }: Props) {
+export function FollowUpInput({ isThinking, mode, onSubmit }: Props) {
   const [value, setValue] = useState("");
   const [queued, setQueued] = useState(false);
   const voice = useVoice((text) => {
@@ -29,7 +37,7 @@ export function FollowUpInput({ isThinking, onSubmit }: Props) {
       <input
         type="text"
         value={value}
-        placeholder={queued ? "Queued — will send when done…" : "Ask a follow-up or speak 🎤"}
+        placeholder={queued ? "Queued — will send when done…" : PLACEHOLDER[mode ?? "tech_support"]}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey) {
