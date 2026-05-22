@@ -19,7 +19,7 @@ export function ConversationHistory({ turns }: Props) {
   if (visible.length === 0) return null;
 
   return (
-    <details className="group" open>
+    <details className="group">
       <summary className="cursor-pointer list-none text-[10px] uppercase tracking-wide text-neutral-500 hover:text-neutral-300">
         <span className="group-open:hidden">▶ Chat ({visible.length})</span>
         <span className="hidden group-open:inline">▼ Chat</span>

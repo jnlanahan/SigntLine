@@ -182,6 +182,7 @@ export default function App() {
       <div className="relative flex h-full flex-col">
         <TitleBar
           onOpenSettings={openSettings}
+          onAdjustCapture={() => void api().overlay.setAdjust(true)}
           onPeek={() => setShowPeek((v) => !v)}
           hasPeek={Boolean(lastFrame)}
           showPeek={showPeek}
@@ -279,7 +280,7 @@ function ContextPanel({
         <button
           type="button"
           onClick={onAttach}
-          className="no-drag rounded px-1.5 py-0.5 text-[11px] text-neutral-300 hover:bg-white/10"
+          className="no-drag rounded border border-white/20 px-2 py-0.5 text-[11px] text-neutral-200 hover:border-white/40 hover:bg-white/10"
           title="Attach text or markdown files"
         >
           📎 Attach
@@ -330,11 +331,13 @@ function PanelShell({ children }: { children: React.ReactNode }) {
 
 function TitleBar({
   onOpenSettings,
+  onAdjustCapture,
   onPeek,
   hasPeek,
   showPeek,
 }: {
   onOpenSettings(): void;
+  onAdjustCapture(): void;
   onPeek(): void;
   hasPeek: boolean;
   showPeek: boolean;
@@ -361,8 +364,16 @@ function TitleBar({
       )}
       <button
         type="button"
-        onClick={onOpenSettings}
+        onClick={onAdjustCapture}
         className={`no-drag rounded px-1.5 py-0.5 text-[11px] text-neutral-400 hover:bg-white/10 hover:text-neutral-100 ${hasPeek ? "" : "ml-auto"}`}
+        title="Adjust capture area"
+      >
+        ⛶
+      </button>
+      <button
+        type="button"
+        onClick={onOpenSettings}
+        className="no-drag rounded px-1.5 py-0.5 text-[11px] text-neutral-400 hover:bg-white/10 hover:text-neutral-100"
         title="Settings"
       >
         ⚙
