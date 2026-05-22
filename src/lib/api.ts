@@ -18,4 +18,5 @@ export type {
   Settings,
   SessionStatus,
   TtsVoiceId,
+  UploadedContext,
 } from "../../electron/types";

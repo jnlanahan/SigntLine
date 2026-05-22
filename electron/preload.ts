@@ -8,6 +8,7 @@ import type {
   InstructionResponse,
   Settings,
   TtsVoiceId,
+  UploadedContext,
 } from "./types";
 
 export interface SightLineApi {
@@ -26,6 +27,9 @@ export interface SightLineApi {
   capture: {
     once(displayId: string | null): Promise<CaptureFrame>;
   };
+  files: {
+    pickContext(): Promise<UploadedContext[]>;
+  };
   claude: {
     nextInstruction(args: {
       goal: string;
@@ -34,6 +38,8 @@ export interface SightLineApi {
       frames: CaptureFrame[];
       followUp?: string;
       clarificationContext?: string;
+      uploadedContext?: string;
+      agentNotes?: string[];
     }): Promise<
       | InstructionResponse
       | { __error: "missing_api_key" }
@@ -97,6 +103,9 @@ const api: SightLineApi = {
   },
   capture: {
     once: (displayId) => ipcRenderer.invoke("capture:once", { displayId }),
+  },
+  files: {
+    pickContext: () => ipcRenderer.invoke("files:pick-context"),
   },
   claude: {
     nextInstruction: (args) =>
