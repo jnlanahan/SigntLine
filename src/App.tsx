@@ -9,6 +9,8 @@ import { Controls } from "./components/Controls";
 import { FollowUpInput } from "./components/FollowUpInput";
 import { GoalPrompt } from "./components/GoalPrompt";
 import type { Clarification } from "./components/GoalPrompt";
+import { ModeSelect } from "./components/ModeSelect";
+import type { AppMode } from "./lib/api";
 import { Instruction } from "./components/Instruction";
 import { PrivacyNotice } from "./components/PrivacyNotice";
 import { Settings as SettingsView } from "./components/Settings";
@@ -18,8 +20,15 @@ import { ConversationHistory } from "./components/ConversationHistory";
 
 type View = "panel" | "settings" | "privacy";
 
+const MODE_META: Record<AppMode, { goalLabel: string; stepNoun: string }> = {
+  tech_support: { goalLabel: "Goal", stepNoun: "step" },
+  training: { goalLabel: "Training plan for", stepNoun: "plan step" },
+  teacher: { goalLabel: "Learning", stepNoun: "topic" },
+};
+
 export default function App() {
   const status = useSession((s) => s.status);
+  const mode = useSession((s) => s.mode);
   const goal = useSession((s) => s.goal);
   const instruction = useSession((s) => s.currentInstruction);
   const completedSteps = useSession((s) => s.completedSteps);
@@ -28,6 +37,7 @@ export default function App() {
   const done = useSession((s) => s.done);
   const reset = useSession((s) => s.reset);
   const setStatus = useSession((s) => s.setStatus);
+  const setMode = useSession((s) => s.setMode);
   const setGoal = useSession((s) => s.setGoal);
   const appendTurn = useSession((s) => s.appendTurn);
   const researchQuery = useSession((s) => s.researchQuery);
@@ -102,7 +112,9 @@ export default function App() {
       .filter((c) => c.answer.trim())
       .map((c) => `Q: ${c.question}\nA: ${c.answer}`)
       .join("\n\n");
+    const activeMode = useSession.getState().mode;
     reset();
+    if (activeMode) setMode(activeMode);
     if (ctx) useSession.getState().setClarificationContext(ctx);
     setGoal(g);
     appendTurn({ role: "user", content: `Goal: ${g}`, timestamp: Date.now() });
@@ -182,6 +194,7 @@ export default function App() {
       <div className="relative flex h-full flex-col">
         <TitleBar
           onOpenSettings={openSettings}
+          onAdjustCapture={() => void api().overlay.setAdjust(true)}
           onPeek={() => setShowPeek((v) => !v)}
           hasPeek={Boolean(lastFrame)}
           showPeek={showPeek}
@@ -205,12 +218,20 @@ export default function App() {
         )}
 
         <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto p-3 sl-scroll">
-          {!goal ? (
-            <GoalPrompt onStart={startSession} />
+          {!mode ? (
+            <ModeSelect onSelect={setMode} />
+          ) : !goal ? (
+            <GoalPrompt
+              mode={mode}
+              onStart={startSession}
+              onBack={() => setMode(null)}
+            />
           ) : (
             <>
               <div className="flex flex-col gap-1">
-                <p className="text-[10px] uppercase tracking-wide text-neutral-500">Goal</p>
+                <p className="text-[10px] uppercase tracking-wide text-neutral-500">
+                  {mode ? MODE_META[mode].goalLabel : "Goal"}
+                </p>
                 <p className="text-xs text-neutral-200">{goal}</p>
               </div>
               <ContextPanel
@@ -225,7 +246,10 @@ export default function App() {
                 error={error}
                 researchQuery={researchQuery}
               />
-              <CompletedSteps steps={completedSteps} />
+              <CompletedSteps
+                steps={completedSteps}
+                noun={mode ? MODE_META[mode].stepNoun : "step"}
+              />
               <ConversationHistory turns={conversation} />
             </>
           )}
@@ -279,7 +303,7 @@ function ContextPanel({
         <button
           type="button"
           onClick={onAttach}
-          className="no-drag rounded px-1.5 py-0.5 text-[11px] text-neutral-300 hover:bg-white/10"
+          className="no-drag rounded border border-white/20 px-2 py-0.5 text-[11px] text-neutral-200 hover:border-white/40 hover:bg-white/10"
           title="Attach text or markdown files"
         >
           📎 Attach
@@ -330,11 +354,13 @@ function PanelShell({ children }: { children: React.ReactNode }) {
 
 function TitleBar({
   onOpenSettings,
+  onAdjustCapture,
   onPeek,
   hasPeek,
   showPeek,
 }: {
   onOpenSettings(): void;
+  onAdjustCapture(): void;
   onPeek(): void;
   hasPeek: boolean;
   showPeek: boolean;
@@ -361,8 +387,16 @@ function TitleBar({
       )}
       <button
         type="button"
-        onClick={onOpenSettings}
+        onClick={onAdjustCapture}
         className={`no-drag rounded px-1.5 py-0.5 text-[11px] text-neutral-400 hover:bg-white/10 hover:text-neutral-100 ${hasPeek ? "" : "ml-auto"}`}
+        title="Adjust capture area"
+      >
+        ⛶
+      </button>
+      <button
+        type="button"
+        onClick={onOpenSettings}
+        className="no-drag rounded px-1.5 py-0.5 text-[11px] text-neutral-400 hover:bg-white/10 hover:text-neutral-100"
         title="Settings"
       >
         ⚙

@@ -10,6 +10,7 @@ export const api = (): SightLineApi => window.sightline;
 
 export type {
   ApiKeyStatus,
+  AppMode,
   CaptureFrame,
   CaptureRegion,
   ClarificationResponse,
