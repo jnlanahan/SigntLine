@@ -51,7 +51,7 @@ export function Instruction({ instruction, status, done, error, researchQuery }:
   }
   if (done) {
     return (
-      <div className="animate-fade-in rounded-md border border-watching/40 bg-watching/10 px-3 py-2.5 text-sm leading-snug text-watching">
+      <div className="sl-selectable animate-fade-in rounded-md border border-watching/40 bg-watching/10 px-3 py-2.5 text-sm leading-snug text-watching">
         <span className="mr-1">✓</span>
         {instruction || "Task complete."}
       </div>
@@ -94,7 +94,7 @@ export function Instruction({ instruction, status, done, error, researchQuery }:
     );
   }
   return (
-    <div className="animate-fade-in rounded-md border border-panel-border bg-black/30 px-3 py-2.5 text-sm leading-snug text-neutral-50">
+    <div className="sl-selectable animate-fade-in rounded-md border border-panel-border bg-black/30 px-3 py-2.5 text-sm leading-snug text-neutral-50">
       {display}
       {display.length < instruction.length && (
         <span className="ml-0.5 inline-block w-1 animate-pulse bg-neutral-400" />

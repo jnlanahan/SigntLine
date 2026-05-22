@@ -42,6 +42,8 @@ export default function App() {
   const appendTurn = useSession((s) => s.appendTurn);
   const researchQuery = useSession((s) => s.researchQuery);
   const conversation = useSession((s) => s.conversation);
+  const attachedFileNames = useSession((s) => s.attachedFileNames);
+  const agentNotes = useSession((s) => s.agentNotes);
 
   const settings = useSettings((s) => s.settings);
   const keyStatus = useSettings((s) => s.keyStatus);
@@ -60,6 +62,15 @@ export default function App() {
 
   useEffect(() => {
     void loadSettings();
+  }, [loadSettings]);
+
+  // The glow overlay can change the capture region on its own (the user drags
+  // it). Reload settings when that happens so the capture loop and Settings UI
+  // stay in sync.
+  useEffect(() => {
+    return api().overlay.onRegionUpdated(() => {
+      void loadSettings();
+    });
   }, [loadSettings]);
 
   useEffect(() => {
@@ -108,7 +119,6 @@ export default function App() {
     setGoal(g);
     appendTurn({ role: "user", content: `Goal: ${g}`, timestamp: Date.now() });
     setStatus("watching");
-    void api().overlay.showGlow(settings?.selectedDisplayId ?? null);
   }
 
   function pause() {
@@ -127,7 +137,6 @@ export default function App() {
     cancelTts();
     reset();
     setShowPeek(false);
-    void api().overlay.hideGlow();
   }
 
   function submitFollowUp(text: string) {
@@ -147,6 +156,13 @@ export default function App() {
       useSession.getState().setPauseReason(null);
       useSession.getState().setResearchQuery(null);
       setStatus("watching");
+    }
+  }
+
+  async function attachContext() {
+    const files = await api().files.pickContext();
+    if (files.length > 0) {
+      useSession.getState().addUploadedContext(files);
     }
   }
 
@@ -178,6 +194,7 @@ export default function App() {
       <div className="relative flex h-full flex-col">
         <TitleBar
           onOpenSettings={openSettings}
+          onAdjustCapture={() => void api().overlay.setAdjust(true)}
           onPeek={() => setShowPeek((v) => !v)}
           hasPeek={Boolean(lastFrame)}
           showPeek={showPeek}
@@ -217,6 +234,11 @@ export default function App() {
                 </p>
                 <p className="text-xs text-neutral-200">{goal}</p>
               </div>
+              <ContextPanel
+                fileNames={attachedFileNames}
+                notes={agentNotes}
+                onAttach={attachContext}
+              />
               <Instruction
                 instruction={instruction}
                 status={status}
@@ -265,6 +287,63 @@ export default function App() {
   );
 }
 
+function ContextPanel({
+  fileNames,
+  notes,
+  onAttach,
+}: {
+  fileNames: string[];
+  notes: string[];
+  onAttach(): void;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] uppercase tracking-wide text-neutral-500">Context</p>
+        <button
+          type="button"
+          onClick={onAttach}
+          className="no-drag rounded border border-white/20 px-2 py-0.5 text-[11px] text-neutral-200 hover:border-white/40 hover:bg-white/10"
+          title="Attach text or markdown files"
+        >
+          📎 Attach
+        </button>
+      </div>
+      {fileNames.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {fileNames.map((name, i) => (
+            <span
+              key={i}
+              className="rounded bg-white/5 px-1.5 py-0.5 text-[10px] text-neutral-300"
+              title={name}
+            >
+              {name}
+            </span>
+          ))}
+        </div>
+      )}
+      {notes.length > 0 && (
+        <details className="group">
+          <summary className="cursor-pointer list-none text-[10px] uppercase tracking-wide text-neutral-500 hover:text-neutral-300">
+            <span className="group-open:hidden">▶ Notes ({notes.length})</span>
+            <span className="hidden group-open:inline">▼ Notes</span>
+          </summary>
+          <ul className="sl-selectable mt-1 flex max-h-32 flex-col gap-1 overflow-y-auto sl-scroll pr-0.5">
+            {notes.map((note, i) => (
+              <li
+                key={i}
+                className="rounded bg-accent/5 px-2 py-1 text-[11px] leading-snug text-neutral-300"
+              >
+                {note}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
 function PanelShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden rounded-xl border border-panel-border bg-panel-bg shadow-2xl backdrop-blur-md">
@@ -275,11 +354,13 @@ function PanelShell({ children }: { children: React.ReactNode }) {
 
 function TitleBar({
   onOpenSettings,
+  onAdjustCapture,
   onPeek,
   hasPeek,
   showPeek,
 }: {
   onOpenSettings(): void;
+  onAdjustCapture(): void;
   onPeek(): void;
   hasPeek: boolean;
   showPeek: boolean;
@@ -306,8 +387,16 @@ function TitleBar({
       )}
       <button
         type="button"
-        onClick={onOpenSettings}
+        onClick={onAdjustCapture}
         className={`no-drag rounded px-1.5 py-0.5 text-[11px] text-neutral-400 hover:bg-white/10 hover:text-neutral-100 ${hasPeek ? "" : "ml-auto"}`}
+        title="Adjust capture area"
+      >
+        ⛶
+      </button>
+      <button
+        type="button"
+        onClick={onOpenSettings}
+        className="no-drag rounded px-1.5 py-0.5 text-[11px] text-neutral-400 hover:bg-white/10 hover:text-neutral-100"
         title="Settings"
       >
         ⚙

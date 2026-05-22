@@ -38,12 +38,13 @@ const VOICE_RULES = `Voice rules (spoken text comes through TTS, so prefer short
 
 const OUTPUT_RULES = `Output rules:
 - Respond with a JSON object only, no prose around it, no code fences.
-- Schema: {"instruction": string, "completed_steps": string[], "done": boolean, "needsResearch": boolean, "researchQuery": string}
+- Schema: {"instruction": string, "completed_steps": string[], "done": boolean, "needsResearch": boolean, "researchQuery": string, "notes": string}
 - "instruction" is your next message to the user — conversational tone, under 80 words.
 - "completed_steps" is the full running list as short phrases (3-7 words each), per the mode rules above. Never duplicate.
 - "done" follows the mode rules above; write a short, punchy wrap-up when done and give no further steps.
 - "needsResearch" is true ONLY when you are genuinely blocked by lack of current documentation or external information you cannot infer from the screen. Set false otherwise.
-- "researchQuery" is a precise web search query string when needsResearch is true, otherwise empty string.`;
+- "researchQuery" is a precise web search query string when needsResearch is true, otherwise empty string.
+- "notes" is your private scratchpad memory. Record durable facts worth remembering across steps — research findings, the user's specific setup (account, version, folder), or decisions made. Keep each note to one short line. These notes are shown back to you on future turns. Use an empty string when there is nothing new to record; never repeat a note you already wrote.`;
 
 const MODE_INTROS: Record<AppMode, string> = {
   tech_support: TECH_SUPPORT_INTRO,
@@ -79,6 +80,10 @@ export interface NextInstructionArgs {
   frames: CaptureFrame[];
   followUp?: string;
   clarificationContext?: string;
+  // Reference material the user attached (text/markdown files).
+  uploadedContext?: string;
+  // Notes the agent recorded on previous turns, oldest to newest.
+  agentNotes?: string[];
 }
 
 export async function getNextInstruction(
@@ -197,6 +202,15 @@ function buildContextHeader(args: NextInstructionArgs, frameCount: number): stri
   if (args.clarificationContext && args.clarificationContext.trim().length > 0) {
     parts.push(`Answers to clarifying questions:\n${args.clarificationContext}`);
   }
+  if (args.uploadedContext && args.uploadedContext.trim().length > 0) {
+    parts.push(`Reference material the user attached:\n${args.uploadedContext.trim()}`);
+  }
+  if (args.agentNotes && args.agentNotes.length > 0) {
+    parts.push(
+      `Your notes so far (memory you recorded on earlier turns):\n` +
+        args.agentNotes.map((n) => `- ${n}`).join("\n"),
+    );
+  }
   const lastAssistant = [...args.conversation]
     .reverse()
     .find((t) => t.role === "assistant");
@@ -247,6 +261,7 @@ function parseInstruction(
         done?: boolean;
         needsResearch?: boolean;
         researchQuery?: string;
+        notes?: string;
       };
       return {
         instruction: (obj.instruction ?? "").trim() || text,
@@ -256,6 +271,7 @@ function parseInstruction(
         done: Boolean(obj.done),
         needsResearch: Boolean(obj.needsResearch),
         researchQuery: (obj.researchQuery ?? "").trim(),
+        notes: (obj.notes ?? "").trim(),
       };
     } catch {
       // fall through
@@ -268,6 +284,7 @@ function parseInstruction(
     done: false,
     needsResearch: false,
     researchQuery: "",
+    notes: "",
   };
 }
 

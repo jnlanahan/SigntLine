@@ -147,6 +147,38 @@ export function Settings({ onClose }: Props) {
       </section>
 
       <section className="flex flex-col gap-2">
+        <label className="text-[11px] uppercase tracking-wide text-neutral-400">
+          Capture area
+        </label>
+        <p className="text-[10px] text-neutral-500">
+          {settings.captureRegion
+            ? `Capturing a ${settings.captureRegion.width}×${settings.captureRegion.height} region. Drag the glowing box to change it.`
+            : "Capturing the whole display. Adjust to capture just one app or window."}
+        </p>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              void api().overlay.setAdjust(true);
+              onClose();
+            }}
+            className="rounded-md bg-accent px-2 py-1 text-xs font-semibold text-white"
+          >
+            Adjust capture area
+          </button>
+          {settings.captureRegion && (
+            <button
+              type="button"
+              onClick={() => void patch({ captureRegion: null })}
+              className="rounded-md border border-panel-border px-2 py-1 text-xs text-neutral-300 hover:bg-black/40"
+            >
+              Reset to full screen
+            </button>
+          )}
+        </div>
+      </section>
+
+      <section className="flex flex-col gap-2">
         <label className="flex items-center justify-between text-[11px] uppercase tracking-wide text-neutral-400">
           Overlay opacity
           <span className="text-neutral-200">{Math.round(settings.opacity * 100)}%</span>

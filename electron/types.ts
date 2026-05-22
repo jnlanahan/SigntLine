@@ -30,12 +30,29 @@ export interface CaptureFrame {
   height: number;
 }
 
+// A sub-region of a display to capture, in display-relative DIP coordinates
+// (origin at the display's top-left). null means capture the whole display.
+export interface CaptureRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface InstructionResponse {
   instruction: string;
   completedSteps: string[];
   done: boolean;
   needsResearch: boolean;
   researchQuery: string;
+  // Durable memory the agent chooses to record (research findings, decisions,
+  // account/version details). Empty string when there's nothing new to note.
+  notes: string;
+}
+
+export interface UploadedContext {
+  name: string;
+  text: string;
 }
 
 export interface ClarificationResponse {
@@ -56,6 +73,7 @@ export interface Settings {
   captureIntervalSec: number;
   opacity: number;
   selectedDisplayId: string | null;
+  captureRegion: CaptureRegion | null;
   hasSeenPrivacyNotice: boolean;
   ttsEnabled: boolean;
   ttsVoice: TtsVoiceId;
@@ -82,6 +100,7 @@ export type IpcChannel =
   | "keys:clear"
   | "displays:list"
   | "capture:once"
+  | "files:pick-context"
   | "claude:next-instruction"
   | "whisper:transcribe"
   | "window:set-opacity"
@@ -90,5 +109,8 @@ export type IpcChannel =
   | "app:quit"
   | "overlay:show-glow"
   | "overlay:hide-glow"
+  | "overlay:set-adjust"
+  | "overlay:commit-region"
+  | "overlay:cancel-adjust"
   | "tts:speak"
   | "session:log";

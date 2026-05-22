@@ -24,7 +24,7 @@ export function ConversationHistory({ turns }: Props) {
         <span className="group-open:hidden">▶ Chat ({visible.length})</span>
         <span className="hidden group-open:inline">▼ Chat</span>
       </summary>
-      <div className="mt-1.5 flex max-h-48 flex-col gap-1.5 overflow-y-auto sl-scroll pr-0.5">
+      <div className="sl-selectable mt-1.5 flex max-h-48 flex-col gap-1.5 overflow-y-auto sl-scroll pr-0.5">
         {visible.map((turn, i) => (
           <div
             key={i}

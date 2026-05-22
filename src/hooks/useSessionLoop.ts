@@ -125,6 +125,8 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
         frames: s.frames,
         followUp,
         clarificationContext: s.clarificationContext,
+        uploadedContext: s.uploadedContext,
+        agentNotes: s.agentNotes,
       });
       unsubEarly();
 
@@ -161,6 +163,10 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
       // 4. Update state
       useSession.getState().setError(null);
       useSession.getState().setRateLimit(null);
+
+      if (result.notes && result.notes.trim().length > 0) {
+        useSession.getState().appendAgentNote(result.notes.trim());
+      }
 
       const lastSpoken = useSession.getState().lastSpokenInstruction;
       const isRepeat =

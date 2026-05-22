@@ -3,12 +3,14 @@ import type {
   ApiKeyStatus,
   AppMode,
   CaptureFrame,
+  CaptureRegion,
   ClarificationResponse,
   ConversationTurn,
   DisplayInfo,
   InstructionResponse,
   Settings,
   TtsVoiceId,
+  UploadedContext,
 } from "./types";
 
 export interface SightLineApi {
@@ -27,6 +29,9 @@ export interface SightLineApi {
   capture: {
     once(displayId: string | null): Promise<CaptureFrame>;
   };
+  files: {
+    pickContext(): Promise<UploadedContext[]>;
+  };
   claude: {
     nextInstruction(args: {
       mode: AppMode;
@@ -36,6 +41,8 @@ export interface SightLineApi {
       frames: CaptureFrame[];
       followUp?: string;
       clarificationContext?: string;
+      uploadedContext?: string;
+      agentNotes?: string[];
     }): Promise<
       | InstructionResponse
       | { __error: "missing_api_key" }
@@ -74,6 +81,8 @@ export interface SightLineApi {
   overlay: {
     showGlow(displayId: string | null): Promise<void>;
     hideGlow(): Promise<void>;
+    setAdjust(adjust: boolean): Promise<void>;
+    onRegionUpdated(cb: (region: CaptureRegion | null) => void): () => void;
   };
   input: {
     onActivity(cb: () => void): () => void;
@@ -99,6 +108,9 @@ const api: SightLineApi = {
   },
   capture: {
     once: (displayId) => ipcRenderer.invoke("capture:once", { displayId }),
+  },
+  files: {
+    pickContext: () => ipcRenderer.invoke("files:pick-context"),
   },
   claude: {
     nextInstruction: (args) =>
@@ -131,6 +143,13 @@ const api: SightLineApi = {
   overlay: {
     showGlow: (displayId) => ipcRenderer.invoke("overlay:show-glow", { displayId }),
     hideGlow: () => ipcRenderer.invoke("overlay:hide-glow"),
+    setAdjust: (adjust) => ipcRenderer.invoke("overlay:set-adjust", { adjust }),
+    onRegionUpdated: (cb) => {
+      const handler = (_: Electron.IpcRendererEvent, region: CaptureRegion | null) =>
+        cb(region);
+      ipcRenderer.on("overlay:region-updated", handler);
+      return () => ipcRenderer.removeListener("overlay:region-updated", handler);
+    },
   },
   input: {
     onActivity: (cb) => {

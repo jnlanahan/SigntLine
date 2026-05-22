@@ -12,6 +12,7 @@ export type {
   ApiKeyStatus,
   AppMode,
   CaptureFrame,
+  CaptureRegion,
   ClarificationResponse,
   ConversationTurn,
   DisplayInfo,
@@ -19,4 +20,5 @@ export type {
   Settings,
   SessionStatus,
   TtsVoiceId,
+  UploadedContext,
 } from "../../electron/types";
