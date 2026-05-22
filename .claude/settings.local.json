@@ -46,7 +46,17 @@
       "PowerShell(Start-Process -FilePath \"cmd.exe\" -ArgumentList \"/c\", \"cd /d `\"s:\\\\Vibe Coding Folder\\\\SigntLine`\" && npm run dev\" -WindowStyle Normal)",
       "Bash(Get-ChildItem -Path \"s:\\\\Vibe Coding Folder\\\\SigntLine\" -Depth 2)",
       "Bash(Select-Object -Property FullName, PSIsContainer)",
-      "Bash(Format-Table -AutoSize)"
+      "Bash(Format-Table -AutoSize)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git stash *)",
+      "Bash(git pull *)",
+      "Bash(git merge *)",
+      "Bash(git reset *)",
+      "Bash(git push *)",
+      "Bash(Get-ChildItem -Path \"s:\\\\Vibe Coding Folder\\\\SigntLine\" -Recurse -Filter \"*.tsx\" -File)",
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(Get-Content -Path \"s:\\\\Vibe Coding Folder\\\\SigntLine\\\\package.json\")"
     ]
   }
 }
