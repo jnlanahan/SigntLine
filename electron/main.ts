@@ -77,28 +77,171 @@ async function loadKeysFromEnv() {
 
 let mainWindow: BrowserWindow | null = null;
 let glowWindow: BrowserWindow | null = null;
+let glowAdjusting = false;
 let inputDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-const GLOW_HTML = `<!DOCTYPE html><html><head><style>
-*{margin:0;padding:0}
-html,body{width:100vw;height:100vh;overflow:hidden;background:transparent}
-.g{position:fixed;inset:0;border:4px solid rgba(99,102,241,0.9);
+// The glow overlay renders an always-visible highlighted box marking the
+// capture region. In "adjust" mode the box becomes draggable/resizable so the
+// user can pick exactly what gets captured (e.g. one application window).
+const GLOW_HTML = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+*{margin:0;padding:0;box-sizing:border-box;user-select:none}
+html,body{width:100vw;height:100vh;overflow:hidden;background:transparent;
+font-family:system-ui,-apple-system,Segoe UI,sans-serif}
+#root{position:fixed;inset:0}
+#box{position:fixed;border:4px solid rgba(99,102,241,0.9);
 box-shadow:inset 0 0 70px 20px rgba(99,102,241,0.28),0 0 70px 20px rgba(99,102,241,0.28);
-animation:p 2.8s ease-in-out infinite}
-@keyframes p{0%,100%{opacity:0.45}50%{opacity:1}}
-</style></head><body><div class="g"></div></body></html>`;
+animation:pulse 2.8s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:0.5}50%{opacity:1}}
+.handle{position:absolute;width:16px;height:16px;background:#fff;
+border:2px solid rgba(99,102,241,1);border-radius:3px;display:none}
+#toolbar{position:fixed;left:50%;top:18px;transform:translateX(-50%);
+display:none;align-items:center;gap:10px;padding:8px 12px;border-radius:10px;
+background:rgba(17,17,23,0.92);border:1px solid rgba(99,102,241,0.5);
+color:#e5e7eb;font-size:13px;box-shadow:0 6px 24px rgba(0,0,0,0.5)}
+#toolbar button{font:inherit;cursor:pointer;border-radius:6px;padding:5px 10px;border:0}
+#size{color:#a5b4fc;font-variant-numeric:tabular-nums;min-width:96px;text-align:center}
+.btn-primary{background:#6366f1;color:#fff}
+.btn-ghost{background:transparent;color:#cbd5e1;border:1px solid rgba(255,255,255,0.18)!important}
+/* view mode: pure visual border, fully click-through */
+#root[data-mode="view"] #box{pointer-events:none}
+/* adjust mode: dim everything outside the box, show handles + toolbar */
+#root[data-mode="adjust"] #box{cursor:move;animation:none;
+box-shadow:0 0 0 100000px rgba(0,0,0,0.5),inset 0 0 60px 12px rgba(99,102,241,0.35)}
+#root[data-mode="adjust"] .handle{display:block}
+#root[data-mode="adjust"] #toolbar{display:flex}
+.h-nw{top:-8px;left:-8px;cursor:nwse-resize}
+.h-n{top:-8px;left:calc(50% - 8px);cursor:ns-resize}
+.h-ne{top:-8px;right:-8px;cursor:nesw-resize}
+.h-e{top:calc(50% - 8px);right:-8px;cursor:ew-resize}
+.h-se{bottom:-8px;right:-8px;cursor:nwse-resize}
+.h-s{bottom:-8px;left:calc(50% - 8px);cursor:ns-resize}
+.h-sw{bottom:-8px;left:-8px;cursor:nesw-resize}
+.h-w{top:calc(50% - 8px);left:-8px;cursor:ew-resize}
+</style></head><body>
+<div id="root" data-mode="view">
+  <div id="box" data-handle="move">
+    <div class="handle h-nw" data-handle="nw"></div>
+    <div class="handle h-n" data-handle="n"></div>
+    <div class="handle h-ne" data-handle="ne"></div>
+    <div class="handle h-e" data-handle="e"></div>
+    <div class="handle h-se" data-handle="se"></div>
+    <div class="handle h-s" data-handle="s"></div>
+    <div class="handle h-sw" data-handle="sw"></div>
+    <div class="handle h-w" data-handle="w"></div>
+  </div>
+  <div id="toolbar">
+    <span>Drag to set the capture area</span>
+    <span id="size"></span>
+    <button id="full" class="btn-ghost" type="button">Full screen</button>
+    <button id="cancel" class="btn-ghost" type="button">Cancel</button>
+    <button id="done" class="btn-primary" type="button">Done</button>
+  </div>
+</div>
+<script>
+(function(){
+  var api = window.glowApi;
+  var MIN = 80;
+  var mode = "view";
+  var region = null; // {x,y,width,height} | null (null = full screen)
+  var root = document.getElementById("root");
+  var box = document.getElementById("box");
+  var sizeLabel = document.getElementById("size");
+
+  function bounds(){ return { w: window.innerWidth, h: window.innerHeight }; }
+  function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
+  function current(){
+    if (region) return region;
+    var b = bounds();
+    return { x:0, y:0, width:b.w, height:b.h };
+  }
+  function render(){
+    var r = current();
+    box.style.left = r.x + "px";
+    box.style.top = r.y + "px";
+    box.style.width = r.width + "px";
+    box.style.height = r.height + "px";
+    root.dataset.mode = mode;
+    sizeLabel.textContent = Math.round(r.width) + " × " + Math.round(r.height);
+  }
+
+  var drag = null;
+  root.addEventListener("pointerdown", function(e){
+    if (mode !== "adjust") return;
+    var handle = e.target && e.target.dataset ? e.target.dataset.handle : null;
+    if (!handle) return;
+    e.preventDefault();
+    region = current();
+    drag = { handle: handle, sx: e.clientX, sy: e.clientY, orig: {
+      x: region.x, y: region.y, width: region.width, height: region.height } };
+    try { root.setPointerCapture(e.pointerId); } catch(_) {}
+  });
+  root.addEventListener("pointermove", function(e){
+    if (!drag) return;
+    var b = bounds();
+    var dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
+    var o = drag.orig, H = drag.handle;
+    var x = o.x, y = o.y, w = o.width, h = o.height;
+    var right = o.x + o.width, bottom = o.y + o.height;
+    if (H === "move"){
+      x = clamp(o.x + dx, 0, b.w - o.width);
+      y = clamp(o.y + dy, 0, b.h - o.height);
+    } else {
+      if (H.indexOf("w") !== -1){ var nx = clamp(o.x + dx, 0, right - MIN); w = right - nx; x = nx; }
+      if (H.indexOf("e") !== -1){ var nr = clamp(right + dx, o.x + MIN, b.w); w = nr - x; }
+      if (H.indexOf("n") !== -1){ var ny = clamp(o.y + dy, 0, bottom - MIN); h = bottom - ny; y = ny; }
+      if (H.indexOf("s") !== -1){ var nb = clamp(bottom + dy, o.y + MIN, b.h); h = nb - y; }
+    }
+    region = { x: x, y: y, width: w, height: h };
+    render();
+  });
+  function endDrag(e){ if (drag){ drag = null; try { root.releasePointerCapture(e.pointerId); } catch(_) {} } }
+  root.addEventListener("pointerup", endDrag);
+  root.addEventListener("pointercancel", endDrag);
+
+  document.getElementById("full").addEventListener("click", function(){ region = null; render(); });
+  document.getElementById("done").addEventListener("click", function(){ api.commit(region); });
+  document.getElementById("cancel").addEventListener("click", function(){ api.cancel(); });
+  window.addEventListener("keydown", function(e){
+    if (mode !== "adjust") return;
+    if (e.key === "Escape") api.cancel();
+    if (e.key === "Enter") api.commit(region);
+  });
+  window.addEventListener("resize", render);
+
+  api.onSetMode(function(payload){
+    mode = payload.mode;
+    region = payload.region || null;
+    render();
+  });
+  render();
+})();
+</script>
+</body></html>`;
+
+function getGlowDisplay(displayId: string | null) {
+  const all = screen.getAllDisplays();
+  return (
+    (displayId ? all.find((d) => String(d.id) === displayId) : null) ??
+    screen.getPrimaryDisplay()
+  );
+}
+
+function broadcastGlowMode() {
+  if (!glowWindow || glowWindow.isDestroyed()) return;
+  glowWindow.webContents.send("glow:set-mode", {
+    mode: glowAdjusting ? "adjust" : "view",
+    region: loadSettings().captureRegion ?? null,
+  });
+}
 
 function showGlowOverlay(displayId: string | null) {
   if (glowWindow && !glowWindow.isDestroyed()) {
     glowWindow.close();
     glowWindow = null;
   }
+  glowAdjusting = false;
 
-  const all = screen.getAllDisplays();
-  const target =
-    (displayId ? all.find((d) => String(d.id) === displayId) : null) ??
-    screen.getPrimaryDisplay();
-
+  const target = getGlowDisplay(displayId);
   const { x, y, width, height } = target.bounds;
 
   glowWindow = new BrowserWindow({
@@ -114,8 +257,10 @@ function showGlowOverlay(displayId: string | null) {
     hasShadow: false,
     focusable: false,
     webPreferences: {
+      preload: path.join(__dirname, "glow-preload.mjs"),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: false,
       backgroundThrottling: false,
     },
   });
@@ -123,6 +268,8 @@ function showGlowOverlay(displayId: string | null) {
   glowWindow.setIgnoreMouseEvents(true, { forward: true });
   glowWindow.setAlwaysOnTop(true, "screen-saver");
   glowWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+
+  glowWindow.webContents.on("did-finish-load", () => broadcastGlowMode());
 
   void glowWindow.loadURL(
     `data:text/html;charset=utf-8,${encodeURIComponent(GLOW_HTML)}`,
@@ -136,6 +283,47 @@ function hideGlowOverlay() {
     glowWindow.close();
     glowWindow = null;
   }
+  glowAdjusting = false;
+}
+
+function setGlowAdjust(adjust: boolean) {
+  if (!glowWindow || glowWindow.isDestroyed()) {
+    showGlowOverlay(loadSettings().selectedDisplayId);
+  }
+  if (!glowWindow) return;
+  glowAdjusting = adjust;
+  if (adjust) {
+    glowWindow.setIgnoreMouseEvents(false);
+    glowWindow.setFocusable(true);
+    glowWindow.focus();
+  } else {
+    glowWindow.setIgnoreMouseEvents(true, { forward: true });
+    glowWindow.setFocusable(false);
+  }
+  broadcastGlowMode();
+}
+
+// Clamp a proposed region to the display and treat a (near-)full-screen
+// selection as "no region" so capture falls back to the whole display.
+function normalizeRegion(
+  region: { x: number; y: number; width: number; height: number } | null,
+  displayId: string | null,
+): { x: number; y: number; width: number; height: number } | null {
+  if (!region) return null;
+  const { width: dw, height: dh } = getGlowDisplay(displayId).size;
+  const x = Math.max(0, Math.min(region.x, dw));
+  const y = Math.max(0, Math.min(region.y, dh));
+  const width = Math.max(1, Math.min(region.width, dw - x));
+  const height = Math.max(1, Math.min(region.height, dh - y));
+  const coversFull =
+    x <= 2 && y <= 2 && width >= dw - 4 && height >= dh - 4;
+  if (coversFull) return null;
+  return {
+    x: Math.round(x),
+    y: Math.round(y),
+    width: Math.round(width),
+    height: Math.round(height),
+  };
 }
 
 function createWindow() {
@@ -190,6 +378,10 @@ app.whenReady().then(async () => {
   registerIpc();
   createWindow();
 
+  // The capture-region glow is always visible while the app is running so the
+  // user can see exactly what's being captured at any time.
+  showGlowOverlay(loadSettings().selectedDisplayId);
+
   // Global input listener — debounced so rapid typing/clicking doesn't spam ticks
   function scheduleInputTick() {
     if (inputDebounceTimer) clearTimeout(inputDebounceTimer);
@@ -217,9 +409,22 @@ function registerIpc() {
   ipcMain.handle(
     "settings:set",
     (_e: IpcMainInvokeEvent, patch: Record<string, unknown>) => {
+      const prev = loadSettings();
       const next = saveSettings(patch);
       if (mainWindow && typeof patch.opacity === "number") {
         mainWindow.setOpacity(next.opacity);
+      }
+      // Moving the capture to a different display means the glow overlay has
+      // to be recreated on that display's bounds.
+      if (
+        "selectedDisplayId" in patch &&
+        next.selectedDisplayId !== prev.selectedDisplayId
+      ) {
+        showGlowOverlay(next.selectedDisplayId);
+      } else if ("captureRegion" in patch) {
+        // Region changed elsewhere (e.g. "Reset to full screen") — refresh the
+        // glow so the visible box matches what's actually captured.
+        broadcastGlowMode();
       }
       return next;
     },
@@ -252,7 +457,10 @@ function registerIpc() {
   ipcMain.handle(
     "capture:once",
     async (_e: IpcMainInvokeEvent, payload: { displayId: string | null }) => {
-      return await captureFrame(payload.displayId ?? null);
+      return await captureFrame(
+        payload.displayId ?? null,
+        loadSettings().captureRegion ?? null,
+      );
     },
   );
 
@@ -442,6 +650,37 @@ function registerIpc() {
 
   ipcMain.handle("overlay:hide-glow", () => {
     hideGlowOverlay();
+  });
+
+  ipcMain.handle(
+    "overlay:set-adjust",
+    (_e: IpcMainInvokeEvent, payload: { adjust: boolean }) => {
+      setGlowAdjust(Boolean(payload.adjust));
+    },
+  );
+
+  ipcMain.handle(
+    "overlay:commit-region",
+    (
+      _e: IpcMainInvokeEvent,
+      payload: {
+        region: { x: number; y: number; width: number; height: number } | null;
+      },
+    ) => {
+      const region = normalizeRegion(
+        payload.region,
+        loadSettings().selectedDisplayId,
+      );
+      saveSettings({ captureRegion: region });
+      setGlowAdjust(false);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("overlay:region-updated", region);
+      }
+    },
+  );
+
+  ipcMain.handle("overlay:cancel-adjust", () => {
+    setGlowAdjust(false);
   });
 
   ipcMain.on("session:log", (_e, message: string) => {

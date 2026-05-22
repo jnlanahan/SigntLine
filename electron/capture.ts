@@ -1,5 +1,11 @@
 import { desktopCapturer, screen } from "electron";
-import type { CaptureFrame, DisplayInfo } from "./types";
+import type { CaptureFrame, CaptureRegion, DisplayInfo } from "./types";
+
+// Largest dimension we keep for the final vision payload. Cropping happens at
+// (near-)native resolution first, then we downscale to this for the API call.
+const MAX_PAYLOAD_WIDTH = 1280;
+// Cap the intermediate full-screen grab so 4K/5K displays don't blow up memory.
+const MAX_GRAB_WIDTH = 2560;
 
 export function listDisplays(): DisplayInfo[] {
   const primary = screen.getPrimaryDisplay();
@@ -18,19 +24,21 @@ export function listDisplays(): DisplayInfo[] {
  */
 export async function captureFrame(
   selectedDisplayId: string | null,
+  region: CaptureRegion | null = null,
 ): Promise<CaptureFrame> {
   const target = pickDisplay(selectedDisplayId);
+
+  // Grab the full display at (near-)native resolution so a cropped sub-region
+  // still has enough detail. We downscale the final crop afterwards.
+  const nativeWidth = Math.round(target.size.width * target.scaleFactor);
+  const grabWidth = Math.min(nativeWidth, MAX_GRAB_WIDTH);
+  const grabHeight = Math.round(
+    (grabWidth / target.size.width) * target.size.height,
+  );
+
   const sources = await desktopCapturer.getSources({
     types: ["screen"],
-    thumbnailSize: {
-      // Downscale to keep payload size reasonable for vision input.
-      // Width 1280 covers most UI detail while staying under ~1.5 MB.
-      width: Math.min(target.size.width, 1280),
-      height: Math.min(
-        target.size.height,
-        Math.round((1280 / target.size.width) * target.size.height),
-      ),
-    },
+    thumbnailSize: { width: grabWidth, height: grabHeight },
     fetchWindowIcons: false,
   });
 
@@ -40,10 +48,32 @@ export async function captureFrame(
   if (!match) {
     throw new Error("No screen capture source available");
   }
-  const image = match.thumbnail;
+  let image = match.thumbnail;
   if (image.isEmpty()) {
     throw new Error("Captured an empty frame (permission may be denied)");
   }
+
+  // Crop to the selected region. The region is in display-relative DIP, so we
+  // scale it into the captured thumbnail's pixel space.
+  if (region) {
+    const ts = image.getSize();
+    const sx = ts.width / target.size.width;
+    const sy = ts.height / target.size.height;
+    const x = clamp(Math.round(region.x * sx), 0, Math.max(0, ts.width - 1));
+    const y = clamp(Math.round(region.y * sy), 0, Math.max(0, ts.height - 1));
+    const w = clamp(Math.round(region.width * sx), 1, ts.width - x);
+    const h = clamp(Math.round(region.height * sy), 1, ts.height - y);
+    if (w > 0 && h > 0) {
+      image = image.crop({ x, y, width: w, height: h });
+    }
+  }
+
+  // Downscale the (possibly cropped) image for the vision payload.
+  const cropped = image.getSize();
+  if (cropped.width > MAX_PAYLOAD_WIDTH) {
+    image = image.resize({ width: MAX_PAYLOAD_WIDTH });
+  }
+
   const size = image.getSize();
   return {
     dataUrl: image.toDataURL(),
@@ -51,6 +81,10 @@ export async function captureFrame(
     width: size.width,
     height: size.height,
   };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }
 
 function pickDisplay(selectedId: string | null) {

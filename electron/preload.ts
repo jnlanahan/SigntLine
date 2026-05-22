@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from "electron";
 import type {
   ApiKeyStatus,
   CaptureFrame,
+  CaptureRegion,
   ClarificationResponse,
   ConversationTurn,
   DisplayInfo,
@@ -78,6 +79,8 @@ export interface SightLineApi {
   overlay: {
     showGlow(displayId: string | null): Promise<void>;
     hideGlow(): Promise<void>;
+    setAdjust(adjust: boolean): Promise<void>;
+    onRegionUpdated(cb: (region: CaptureRegion | null) => void): () => void;
   };
   input: {
     onActivity(cb: () => void): () => void;
@@ -138,6 +141,13 @@ const api: SightLineApi = {
   overlay: {
     showGlow: (displayId) => ipcRenderer.invoke("overlay:show-glow", { displayId }),
     hideGlow: () => ipcRenderer.invoke("overlay:hide-glow"),
+    setAdjust: (adjust) => ipcRenderer.invoke("overlay:set-adjust", { adjust }),
+    onRegionUpdated: (cb) => {
+      const handler = (_: Electron.IpcRendererEvent, region: CaptureRegion | null) =>
+        cb(region);
+      ipcRenderer.on("overlay:region-updated", handler);
+      return () => ipcRenderer.removeListener("overlay:region-updated", handler);
+    },
   },
   input: {
     onActivity: (cb) => {
