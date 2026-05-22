@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useVoice } from "../hooks/useVoice";
 import { api } from "../lib/api";
+import type { AppMode } from "../lib/api";
 
 export interface Clarification {
   question: string;
@@ -8,10 +9,34 @@ export interface Clarification {
 }
 
 interface Props {
+  mode: AppMode;
   onStart(goal: string, clarifications: Clarification[]): void;
+  onBack(): void;
 }
 
-export function GoalPrompt({ onStart }: Props) {
+const PROMPT_COPY: Record<
+  AppMode,
+  { label: string; placeholder: string }
+> = {
+  tech_support: {
+    label: "What do you want help with?",
+    placeholder:
+      'e.g. "Help me set up S3 storage in AWS" or "Walk me through partitioning my hard drive"',
+  },
+  training: {
+    label: "What do you want to build a training plan for?",
+    placeholder:
+      'e.g. "Onboarding new support reps" or "How our team files expense reports"',
+  },
+  teacher: {
+    label: "What do you want to learn?",
+    placeholder:
+      'e.g. "This machine-learning paper" or "Chapter 4 of my statistics textbook"',
+  },
+};
+
+export function GoalPrompt({ mode, onStart, onBack }: Props) {
+  const copy = PROMPT_COPY[mode];
   const [value, setValue] = useState("");
   const [phase, setPhase] = useState<"input" | "clarifying">("input");
   const [questions, setQuestions] = useState<string[]>([]);
@@ -27,7 +52,7 @@ export function GoalPrompt({ onStart }: Props) {
     if (!t) return;
     setLoadingClarify(true);
     try {
-      const result = await api().claude.getClarifications({ goal: t });
+      const result = await api().claude.getClarifications({ mode, goal: t });
       if ("questions" in result && result.questions.length > 0) {
         setQuestions(result.questions);
         setAnswers(new Array(result.questions.length).fill(""));
@@ -107,8 +132,15 @@ export function GoalPrompt({ onStart }: Props) {
 
   return (
     <div className="no-drag flex flex-col gap-2">
+      <button
+        type="button"
+        onClick={onBack}
+        className="self-start text-[11px] text-neutral-500 hover:text-neutral-300"
+      >
+        ← Change mode
+      </button>
       <label className="text-[11px] uppercase tracking-wide text-neutral-400">
-        What do you want help with?
+        {copy.label}
       </label>
       <textarea
         value={value}
@@ -120,7 +152,7 @@ export function GoalPrompt({ onStart }: Props) {
           }
         }}
         rows={3}
-        placeholder='e.g. "Help me set up S3 storage in AWS" or "Walk me through partitioning my hard drive"'
+        placeholder={copy.placeholder}
         className="sl-scroll w-full resize-none rounded-md border border-panel-border bg-black/30 px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-500 focus:border-accent focus:outline-none"
       />
       <div className="flex items-center gap-2">

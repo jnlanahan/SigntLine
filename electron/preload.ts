@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   ApiKeyStatus,
+  AppMode,
   CaptureFrame,
   CaptureRegion,
   ClarificationResponse,
@@ -33,6 +34,7 @@ export interface SightLineApi {
   };
   claude: {
     nextInstruction(args: {
+      mode: AppMode;
       goal: string;
       completedSteps: string[];
       conversation: ConversationTurn[];
@@ -47,7 +49,7 @@ export interface SightLineApi {
       | { __error: "rate_limited"; retryAfterSec: number }
       | { __error: "request_failed"; message: string }
     >;
-    getClarifications(args: { goal: string }): Promise<
+    getClarifications(args: { mode: AppMode; goal: string }): Promise<
       ClarificationResponse | { __error: string; message?: string }
     >;
     onInstructionReady(cb: (text: string) => void): () => void;

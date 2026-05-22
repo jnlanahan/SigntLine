@@ -1,3 +1,5 @@
+export type AppMode = "tech_support" | "training" | "teacher";
+
 export type SessionStatus =
   | "idle"
   | "watching"

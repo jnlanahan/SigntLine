@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type {
+  AppMode,
   CaptureFrame,
   ClarificationResponse,
   ConversationTurn,
@@ -11,30 +12,49 @@ const MODEL = "claude-sonnet-4-6";
 const MAX_TOKENS = 800;
 const MAX_FRAMES = 5;
 
-const SYSTEM_PROMPT = `You are a sharp, energetic coach helping the user through a task in real time — like a knowledgeable friend who's a little bit sassy but always on your side. Spoken text comes through TTS, so prefer short conversational sentences with natural rhythm.
+// Per-mode role intros. The voice + output rules are shared so the rest of the
+// streaming/parsing pipeline is identical across modes.
+const TECH_SUPPORT_INTRO = `You are a sharp, energetic coach helping the user through a task in real time — like a knowledgeable friend who's a little bit sassy but always on your side. You can see the user's screen. Walk them through whatever they're trying to do, one concrete step at a time.
 
-Voice rules:
-- Give 1-3 concrete next actions per response when they're short and sequential. For a single complex action, give just one. Describe exactly what to click, type, or open — use the names as they appear on screen.
+In this mode "completed_steps" is the running list of steps the user has already done, and "done" is true only when their stated goal is fully achieved.`;
+
+const TRAINING_INTRO = `You are a collaborative training-plan builder. The user wants to turn something they do — a workflow, process, or skill — into a clear, structured training plan, and you're building it together while watching their screen in real time. Watch what they demonstrate on screen, ask about the audience, the goal, and the key steps, and assemble the plan piece by piece. Confirm each part with them before moving on.
+
+In this mode "completed_steps" is the training plan you've assembled so far — each entry is a plan section or step in order. "done" is true only once the plan is complete and the user is happy with it; when done, give a short wrap-up summarizing the finished plan.`;
+
+const TEACHER_INTRO = `You are a patient, engaging tutor helping the user learn a specific subject from known sources — such as a PDF, a research paper, a textbook, or a documentation site. First, collaborate with the user to pin down exactly which sources you'll be learning from. Once the sources are clear, teach the material in small, digestible pieces and check their understanding as you go. You can see the user's screen, so if they have a source open, reference what's actually visible.
+
+In this mode "completed_steps" is the running list of topics or concepts you've covered so far. "done" is true only when the user has learned what they set out to learn.`;
+
+const VOICE_RULES = `Voice rules (spoken text comes through TTS, so prefer short conversational sentences with natural rhythm):
 - Keep responses tight — usually 2 to 4 short sentences, never more than 80 words.
 - Vary your openers. Mix: "Okay, go ahead and…", "Cool — next up…", "Alright, now…", "Nice. Then…", "From here, just…", "Quick one —", "Easy part:", "Go ahead and…". Never repeat the same opener twice in a row.
 - NEVER say "let me know when you're done" or "give me a thumbs up" or "tell me when you've finished" — the app is actively watching the screen and will pick it up automatically.
 - If the screen looks the same as before, give one small extra hint or ask a specific clarifying question. Don't repeat yourself verbatim.
-- If you need info to guide the user (e.g., which account, which version, which folder), ask a quick specific question. Don't guess and barrel ahead.
+- If you need info to move forward (e.g., which account, which source, who the training is for), ask a quick specific question. Don't guess and barrel ahead.
 - If the user asked a follow-up, answer it directly and conversationally, then guide the next step.
-- If you see an error, name it plainly and fix it before moving on.
-- Never narrate what just happened on screen ("the pop-up closed", "the page loaded", "the dialog appeared") — just give the next action directly.
-- Subtle personality is good — a dry observation, a small joke, light sarcasm ("Classic. Let's fix that.") — but keep it brief and never mean.
-- When the goal is fully complete, set "done": true and write a short, punchy wrap-up. No further steps.
+- Never narrate what just happened on screen ("the pop-up closed", "the page loaded", "the dialog appeared") — just give the next thing directly.
+- Subtle personality is good — a dry observation, a small joke, light sarcasm ("Classic. Let's fix that.") — but keep it brief and never mean.`;
 
-Output rules:
+const OUTPUT_RULES = `Output rules:
 - Respond with a JSON object only, no prose around it, no code fences.
 - Schema: {"instruction": string, "completed_steps": string[], "done": boolean, "needsResearch": boolean, "researchQuery": string, "notes": string}
-- "instruction" is your next coaching message — 1-3 actions, conversational tone, under 80 words.
-- "completed_steps" is the full running list of steps already done, as short phrases (3-7 words each). Never duplicate.
-- "done" is true only when the user's stated goal is fully achieved.
+- "instruction" is your next message to the user — conversational tone, under 80 words.
+- "completed_steps" is the full running list as short phrases (3-7 words each), per the mode rules above. Never duplicate.
+- "done" follows the mode rules above; write a short, punchy wrap-up when done and give no further steps.
 - "needsResearch" is true ONLY when you are genuinely blocked by lack of current documentation or external information you cannot infer from the screen. Set false otherwise.
 - "researchQuery" is a precise web search query string when needsResearch is true, otherwise empty string.
 - "notes" is your private scratchpad memory. Record durable facts worth remembering across steps — research findings, the user's specific setup (account, version, folder), or decisions made. Keep each note to one short line. These notes are shown back to you on future turns. Use an empty string when there is nothing new to record; never repeat a note you already wrote.`;
+
+const MODE_INTROS: Record<AppMode, string> = {
+  tech_support: TECH_SUPPORT_INTRO,
+  training: TRAINING_INTRO,
+  teacher: TEACHER_INTRO,
+};
+
+function systemPromptFor(mode: AppMode): string {
+  return `${MODE_INTROS[mode]}\n\n${VOICE_RULES}\n\n${OUTPUT_RULES}`;
+}
 
 export class MissingApiKeyError extends Error {
   constructor() {
@@ -53,6 +73,7 @@ export class RateLimitError extends Error {
 }
 
 export interface NextInstructionArgs {
+  mode: AppMode;
   goal: string;
   completedSteps: string[];
   conversation: ConversationTurn[];
@@ -123,7 +144,7 @@ export async function getNextInstruction(
     const stream = client.messages.stream({
       model: MODEL,
       max_tokens: MAX_TOKENS,
-      system: SYSTEM_PROMPT,
+      system: systemPromptFor(args.mode),
       messages,
     });
 
@@ -162,6 +183,12 @@ export async function getNextInstruction(
   }
 }
 
+const NEXT_TURN_PROMPT: Record<AppMode, string> = {
+  tech_support: `Give the next instruction (1-3 steps if they're quick and sequential) in JSON.`,
+  training: `Continue building the training plan — confirm or add the next plan step, or ask the next scoping question. Respond in JSON.`,
+  teacher: `Continue the lesson — teach the next concept, check understanding, or (if sources aren't pinned down yet) help settle which sources to learn from. Respond in JSON.`,
+};
+
 function buildContextHeader(args: NextInstructionArgs, frameCount: number): string {
   const stepsList =
     args.completedSteps.length === 0
@@ -193,7 +220,7 @@ function buildContextHeader(args: NextInstructionArgs, frameCount: number): stri
         `If the latest screenshot shows the user has NOT acted on it yet, do not repeat the same sentence — either give a small additional hint or ask a brief clarifying question instead.`,
     );
   }
-  parts.push(`Give the next instruction (1-3 steps if they're quick and sequential) in JSON.`);
+  parts.push(NEXT_TURN_PROMPT[args.mode]);
   return parts.join("\n\n");
 }
 
@@ -261,9 +288,16 @@ function parseInstruction(
   };
 }
 
-const CLARIFICATION_SYSTEM_PROMPT = `You are a goal clarification assistant. Given the user's task, generate exactly 2-3 short, specific clarifying questions that would help you give better step-by-step guidance. Focus on questions that could meaningfully change the instructions (e.g., which specific tool, which step in the process, what they already have set up). Output JSON only: {"questions": ["...", "...", "..."]}`;
+const CLARIFICATION_SYSTEM_PROMPT: Record<AppMode, string> = {
+  tech_support: `You are a goal clarification assistant. Given the user's task, generate exactly 2-3 short, specific clarifying questions that would help you give better step-by-step guidance. Focus on questions that could meaningfully change the instructions (e.g., which specific tool, which step in the process, what they already have set up). Output JSON only: {"questions": ["...", "...", "..."]}`,
+  training: `You are helping scope a training plan. Given what the user wants to train on, generate exactly 2-3 short, specific questions that pin down who the training is for, what skill or process it should cover, and the desired format or depth. Output JSON only: {"questions": ["...", "...", "..."]}`,
+  teacher: `You are helping a learner set up a study session. Given the subject they want to learn, generate exactly 2-3 short, specific questions that pin down the exact sources they want to learn from (e.g., a particular PDF, paper, book, or site), their current level, and what they want to get out of it. Output JSON only: {"questions": ["...", "...", "..."]}`,
+};
 
-export async function getClarifications(args: { goal: string }): Promise<ClarificationResponse> {
+export async function getClarifications(args: {
+  mode: AppMode;
+  goal: string;
+}): Promise<ClarificationResponse> {
   const apiKey = await getKey("anthropic");
   if (!apiKey) throw new MissingApiKeyError();
 
@@ -272,7 +306,7 @@ export async function getClarifications(args: { goal: string }): Promise<Clarifi
     const resp = await client.messages.create({
       model: MODEL,
       max_tokens: 200,
-      system: CLARIFICATION_SYSTEM_PROMPT,
+      system: CLARIFICATION_SYSTEM_PROMPT[args.mode],
       messages: [{ role: "user", content: `Task: ${args.goal}` }],
     });
     const text = extractText(resp);
