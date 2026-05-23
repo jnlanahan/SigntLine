@@ -51,7 +51,6 @@ export async function speakText(
       voice,
       input: text,
       response_format: "mp3",
-      // @ts-expect-error - instructions param not yet in SDK types
       instructions: TONE_INSTRUCTIONS,
     });
     return Buffer.from(await response.arrayBuffer());

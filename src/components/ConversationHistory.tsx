@@ -19,29 +19,37 @@ export function ConversationHistory({ turns }: Props) {
   if (visible.length === 0) return null;
 
   return (
-    <details className="group">
-      <summary className="cursor-pointer list-none text-[10px] uppercase tracking-wide text-neutral-500 hover:text-neutral-300">
-        <span className="group-open:hidden">▶ Chat ({visible.length})</span>
-        <span className="hidden group-open:inline">▼ Chat</span>
-      </summary>
-      <div className="sl-selectable mt-1.5 flex max-h-48 flex-col gap-1.5 overflow-y-auto sl-scroll pr-0.5">
-        {visible.map((turn, i) => (
+    <div className="sl-selectable flex flex-col gap-1.5">
+      {visible.map((turn, i) => {
+        const isUser = turn.role === "user";
+        return (
           <div
             key={i}
-            className={`rounded px-2 py-1.5 text-xs leading-snug ${
-              turn.role === "user"
-                ? "ml-4 bg-white/5 text-neutral-300"
-                : "mr-4 bg-accent/10 text-neutral-100"
-            }`}
+            className={`flex ${isUser ? "justify-end" : "justify-start"}`}
           >
-            <span className="mb-0.5 block text-[9px] uppercase tracking-wider opacity-50">
-              {turn.role === "user" ? "You" : "SightLine"}
-            </span>
-            {turn.content}
+            <div
+              className="max-w-[85%] px-3 py-2 text-[13px] leading-snug"
+              style={
+                isUser
+                  ? {
+                      background: "linear-gradient(180deg, #8FC4EC 0%, #5A93C7 100%)",
+                      color: "#0d1117",
+                      borderRadius: "14px 14px 4px 14px",
+                    }
+                  : {
+                      background: "rgba(244,232,218,0.05)",
+                      color: "#F4E8DA",
+                      border: "1px solid rgba(244,232,218,0.08)",
+                      borderRadius: "14px 14px 14px 4px",
+                    }
+              }
+            >
+              {turn.content}
+            </div>
           </div>
-        ))}
-        <div ref={bottomRef} />
-      </div>
-    </details>
+        );
+      })}
+      <div ref={bottomRef} />
+    </div>
   );
 }

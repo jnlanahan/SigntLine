@@ -8,7 +8,7 @@ body,
   height: 100%;
   margin: 0;
   background: transparent;
-  color: #e6e8ee;
+  color: #F4E8DA;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow: hidden;
@@ -27,20 +27,23 @@ textarea {
   user-select: text;
 }
 
-/* Regions whose text the user should be able to select and copy (chat, etc). */
+/* Regions whose text the user should be able to select and copy */
 .sl-selectable,
 .sl-selectable * {
   user-select: text;
   cursor: text;
 }
 
-/* Custom scrollbar inside panel */
+/* Custom scrollbar */
 .sl-scroll::-webkit-scrollbar {
-  width: 6px;
+  width: 4px;
 }
 .sl-scroll::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.12);
-  border-radius: 3px;
+  background: rgba(244, 232, 218, 0.12);
+  border-radius: 2px;
+}
+.sl-scroll::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .drag-region {
@@ -50,43 +53,123 @@ textarea {
   -webkit-app-region: no-drag;
 }
 
+/* ── Legacy animation classes (still used by Instruction.tsx) ── */
 @keyframes pulseDot {
-  0%,
-  100% {
-    transform: scale(1);
-    opacity: 1;
-  }
-  50% {
-    transform: scale(1.4);
-    opacity: 0.6;
-  }
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50%       { transform: scale(1.4); opacity: 0.6; }
 }
 .pulse-dot {
   animation: pulseDot 1.4s ease-in-out infinite;
 }
 
 @keyframes spinSoft {
-  to {
-    transform: rotate(360deg);
-  }
+  to { transform: rotate(360deg); }
 }
 .spin-soft {
   animation: spinSoft 1.2s linear infinite;
 }
 
-.slider-range::-webkit-slider-thumb {
-  appearance: none;
-  width: 14px;
-  height: 14px;
-  border-radius: 9999px;
-  background: #7c5cff;
-  cursor: pointer;
-  border: 2px solid #fff;
-}
+/* ── Slider (used in Settings.tsx) ── */
 .slider-range {
   appearance: none;
-  background: rgba(255, 255, 255, 0.12);
-  height: 4px;
+  background: rgba(244, 232, 218, 0.08);
+  height: 6px;
   border-radius: 9999px;
   outline: none;
+  cursor: pointer;
+}
+.slider-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 9999px;
+  background: white;
+  border: 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(0, 0, 0, 0.05);
+  cursor: pointer;
+}
+.slider-range::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 9999px;
+  background: white;
+  border: 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+}
+
+/* ── Ambient lava animations ── */
+@keyframes sl-lava1 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33%      { transform: translate(40px, -20px) scale(1.15); }
+  66%      { transform: translate(-20px, 30px) scale(0.9); }
+}
+@keyframes sl-lava2 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50%      { transform: translate(-30px, 50px) scale(1.2); }
+}
+@keyframes sl-window-bloom {
+  0%, 100% { opacity: 0.75; transform: scale(0.98); }
+  50%      { opacity: 1;    transform: scale(1.02); }
+}
+
+/* ── D-pad animations ── */
+@keyframes dpad-bloom {
+  0%, 100% { opacity: 0.7; transform: scale(0.98); }
+  50%      { opacity: 1;   transform: scale(1.04); }
+}
+@keyframes dpad-core-pulse {
+  0%, 100% { opacity: 0.85; transform: translate(-50%, -50%) scale(1); }
+  50%      { opacity: 1;    transform: translate(-50%, -50%) scale(1.08); }
+}
+@keyframes dpad-blob1 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33%      { transform: translate(6px, -8px) scale(1.15); }
+  66%      { transform: translate(-5px, 5px) scale(0.9); }
+}
+@keyframes dpad-blob2 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50%      { transform: translate(-9px, 10px) scale(1.2); }
+}
+@keyframes dpad-pulse-ring {
+  0%   { transform: translate(-50%, -50%) scale(0.8); opacity: 0.55; }
+  100% { transform: translate(-50%, -50%) scale(1.6); opacity: 0; }
+}
+.dpad-pulse-ring {
+  animation: dpad-pulse-ring 600ms ease-out forwards;
+}
+
+/* ── Status dot ping ── */
+@keyframes sl-live-pulse {
+  0%   { transform: scale(0.6); opacity: 0.5; }
+  80%  { transform: scale(2);   opacity: 0; }
+  100% { transform: scale(2);   opacity: 0; }
+}
+
+/* ── Settings slide-in ── */
+@keyframes sl-sheet-in {
+  from { transform: translateY(8px); opacity: 0; }
+  to   { transform: translateY(0);   opacity: 1; }
+}
+.sl-sheet-in {
+  animation: sl-sheet-in 220ms cubic-bezier(0.2, 0, 0.1, 1);
+}
+
+/* ── D-pad arm label animation ── */
+@keyframes dpad-label-in {
+  from { opacity: 0; transform: scale(0.92); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.dpad-label-in {
+  animation: dpad-label-in 180ms cubic-bezier(0.2, 0, 0.1, 1) both;
+}
+
+/* ── Flyout animations ── */
+@keyframes dpad-flyout-up {
+  from { opacity: 0; transform: translateY(8px)  scale(0.96); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes dpad-flyout-down {
+  from { opacity: 0; transform: translateY(-8px) scale(0.96); }
+  to   { opacity: 1; transform: none; }
 }

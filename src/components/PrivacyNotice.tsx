@@ -4,39 +4,40 @@ interface Props {
 
 export function PrivacyNotice({ onAccept }: Props) {
   return (
-    <div className="flex h-full flex-col gap-3 p-4 text-sm text-neutral-200">
-      <h2 className="text-base font-semibold text-white">
-        Before we start watching your screen
-      </h2>
-      <ul className="list-disc space-y-1.5 pl-5 text-xs text-neutral-300">
-        <li>
-          SightLine captures screenshots of your selected display and sends them
-          to the <strong>Anthropic API</strong> to get the next instruction.
-        </li>
-        <li>
-          Screenshots are kept in memory only — they are{" "}
-          <strong>never written to disk</strong>.
-        </li>
-        <li>
-          Voice input, when used, is sent to the <strong>OpenAI Whisper API</strong>{" "}
-          for transcription.
-        </li>
-        <li>
-          You can hit <strong>Pause</strong> or <strong>Stop</strong> at any time
-          to immediately halt all capture and API calls.
-        </li>
-        <li>
-          API keys are stored in the Windows Credential Manager via keytar — not
-          in plain-text files.
-        </li>
+    <div className="flex h-full flex-col gap-4 p-5">
+      <div>
+        <p className="font-mono text-[9px] uppercase tracking-widest text-sl-ink3">Before we begin</p>
+        <h2 className="mt-1.5 text-[15px] font-semibold tracking-tight text-sl-ink">
+          SightLine will watch your screen
+        </h2>
+      </div>
+      <ul className="flex flex-col gap-2.5">
+        {[
+          <>Screenshots are sent to the <strong className="text-sl-ink font-semibold">Anthropic API</strong> to get your next instruction.</>,
+          <>Screenshots are kept in memory only — <strong className="text-sl-ink font-semibold">never written to disk</strong>.</>,
+          <>Voice input is sent to the <strong className="text-sl-ink font-semibold">OpenAI Whisper API</strong> for transcription.</>,
+          <>Hit <strong className="text-sl-ink font-semibold">Pause</strong> or <strong className="text-sl-ink font-semibold">Stop</strong> at any time to halt capture and API calls.</>,
+          <>API keys are stored in the <strong className="text-sl-ink font-semibold">Windows Credential Manager</strong> — not in plain-text files.</>,
+        ].map((item, i) => (
+          <li key={i} className="flex items-start gap-2.5">
+            <span
+              className="mt-[3px] h-1.5 w-1.5 flex-shrink-0 rounded-full"
+              style={{ background: "#8FC4EC" }}
+            />
+            <span className="text-xs leading-relaxed text-sl-ink2">{item}</span>
+          </li>
+        ))}
       </ul>
-      <p className="text-[11px] text-neutral-500">
-        Avoid having sensitive material (passwords, private data) on screen
-        unless you trust the recipient API.
+      <p
+        className="rounded-xl px-3 py-2.5 text-[11px] leading-snug text-sl-ink3"
+        style={{ border: "1px solid rgba(244,232,218,0.06)", background: "rgba(244,232,218,0.02)" }}
+      >
+        Avoid having passwords or sensitive data on screen unless you trust the recipient API.
       </p>
       <button
         onClick={onAccept}
-        className="mt-auto self-end rounded-md bg-accent px-4 py-1.5 text-xs font-semibold text-white"
+        className="mt-auto self-end rounded-xl px-5 py-2 text-xs font-semibold transition"
+        style={{ background: "#8FC4EC", color: "#0d1117", border: 0, cursor: "pointer" }}
       >
         I understand, continue
       </button>

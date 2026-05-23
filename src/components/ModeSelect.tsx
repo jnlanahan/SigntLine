@@ -36,33 +36,47 @@ export function ModeSelect({ onSelect }: Props) {
   return (
     <div className="no-drag flex flex-col gap-3">
       <div className="flex flex-col gap-1">
-        <p className="text-[11px] uppercase tracking-wide text-neutral-400">
+        <p className="font-mono text-[10px] uppercase tracking-widest text-sl-ink3">
           Choose a mode
         </p>
-        <p className="text-xs text-neutral-500">
+        <p className="text-xs text-sl-ink3">
           SightLine can see your screen in every mode.
         </p>
       </div>
       <div className="flex flex-col gap-2">
         {MODES.map((m) => (
-          <button
-            key={m.mode}
-            type="button"
-            onClick={() => onSelect(m.mode)}
-            className="flex items-start gap-3 rounded-md border border-panel-border bg-black/30 px-3 py-2.5 text-left transition hover:border-accent hover:bg-black/50"
-          >
-            <span className="mt-0.5 text-lg leading-none">{m.icon}</span>
-            <span className="flex flex-col gap-0.5">
-              <span className="text-sm font-semibold text-neutral-100">
-                {m.title}
-              </span>
-              <span className="text-xs leading-snug text-neutral-400">
-                {m.blurb}
-              </span>
-            </span>
-          </button>
+          <ModeCard key={m.mode} card={m} onSelect={onSelect} />
         ))}
       </div>
     </div>
+  );
+}
+
+function ModeCard({ card, onSelect }: { card: ModeCard; onSelect(m: AppMode): void }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(card.mode)}
+      className="flex items-start gap-3 rounded-xl border px-3 py-3 text-left transition"
+      style={{
+        borderColor: "rgba(244,232,218,0.08)",
+        background: "rgba(244,232,218,0.03)",
+        cursor: "pointer",
+      }}
+      onMouseEnter={(e) => {
+        (e.currentTarget as HTMLButtonElement).style.borderColor = "rgba(143,196,236,0.35)";
+        (e.currentTarget as HTMLButtonElement).style.background  = "rgba(90,147,199,0.08)";
+      }}
+      onMouseLeave={(e) => {
+        (e.currentTarget as HTMLButtonElement).style.borderColor = "rgba(244,232,218,0.08)";
+        (e.currentTarget as HTMLButtonElement).style.background  = "rgba(244,232,218,0.03)";
+      }}
+    >
+      <span className="mt-0.5 text-lg leading-none">{card.icon}</span>
+      <span className="flex flex-col gap-0.5">
+        <span className="text-sm font-semibold tracking-tight text-sl-ink">{card.title}</span>
+        <span className="text-xs leading-snug text-sl-ink2">{card.blurb}</span>
+      </span>
+    </button>
   );
 }

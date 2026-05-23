@@ -3,9 +3,9 @@ import { useVoice } from "../hooks/useVoice";
 import type { AppMode } from "../lib/api";
 
 const PLACEHOLDER: Record<AppMode, string> = {
-  tech_support: "Ask a follow-up or speak 🎤",
-  training: "Ask a question or say 'done' when the plan is complete",
-  teacher: "Ask a question or tell Claude what to explore next",
+  tech_support: "Ask a follow-up…",
+  training:     "Ask a question or say 'done' when the plan is complete",
+  teacher:      "Ask a question or tell Claude what to explore next",
 };
 
 interface Props {
@@ -33,7 +33,14 @@ export function FollowUpInput({ isThinking, mode, onSubmit }: Props) {
   }
 
   return (
-    <div className="no-drag flex items-center gap-1.5 rounded-md border border-panel-border bg-black/30 px-2 py-1">
+    <div
+      className="no-drag flex items-center gap-2 rounded-xl border px-3 py-1.5"
+      style={{
+        borderColor: "rgba(244,232,218,0.10)",
+        background: "rgba(244,232,218,0.04)",
+        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+      }}
+    >
       <input
         type="text"
         value={value}
@@ -45,17 +52,14 @@ export function FollowUpInput({ isThinking, mode, onSubmit }: Props) {
             submit();
           }
         }}
-        className="flex-1 bg-transparent text-xs text-neutral-100 placeholder:text-neutral-500 focus:outline-none"
+        className="flex-1 bg-transparent text-sm text-sl-ink placeholder:text-sl-ink3 focus:outline-none"
       />
+
+      {/* Mic button */}
       <button
         type="button"
         onClick={() => (voice.state === "recording" ? voice.stop() : voice.start())}
         disabled={voice.state === "transcribing"}
-        className={`rounded px-1.5 py-0.5 text-[11px] transition ${
-          voice.state === "recording"
-            ? "bg-error/30 text-error"
-            : "text-neutral-300 hover:bg-white/10"
-        } disabled:opacity-50`}
         title={
           voice.state === "recording"
             ? "Stop recording"
@@ -63,17 +67,68 @@ export function FollowUpInput({ isThinking, mode, onSubmit }: Props) {
               ? "Transcribing…"
               : "Voice input"
         }
+        className="flex items-center justify-center rounded-lg p-1.5 transition disabled:opacity-50"
+        style={{
+          background:
+            voice.state === "recording"
+              ? "rgba(239,68,68,0.15)"
+              : "transparent",
+          color:
+            voice.state === "recording"
+              ? "#ef4444"
+              : "#7A6E63",
+          border: 0,
+          cursor: voice.state === "transcribing" ? "default" : "pointer",
+        }}
       >
-        {voice.state === "recording" ? "● rec" : voice.state === "transcribing" ? "…" : "🎤"}
+        {voice.state === "recording" ? (
+          <span style={{ fontSize: 10, fontWeight: 700, color: "#ef4444" }}>● REC</span>
+        ) : voice.state === "transcribing" ? (
+          <span style={{ fontSize: 10, color: "#7A6E63" }}>…</span>
+        ) : (
+          <MicIcon />
+        )}
       </button>
+
+      {/* Send button */}
       <button
         type="button"
         onClick={submit}
         disabled={value.trim().length === 0}
-        className="rounded bg-accent px-2 py-0.5 text-[11px] font-medium text-white disabled:opacity-40"
+        className="flex items-center justify-center rounded-lg transition"
+        style={{
+          width: 28, height: 28,
+          border: 0,
+          background: value.trim() ? "#8FC4EC" : "rgba(244,232,218,0.06)",
+          color: value.trim() ? "#0d1117" : "#7A6E63",
+          cursor: value.trim() ? "pointer" : "default",
+          opacity: value.trim() ? 1 : 0.6,
+        }}
       >
-        {queued ? "✓" : "Send"}
+        {queued ? (
+          <span style={{ fontSize: 11, fontWeight: 700 }}>✓</span>
+        ) : (
+          <ArrowUpIcon active={value.trim().length > 0} />
+        )}
       </button>
     </div>
+  );
+}
+
+function MicIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+      <rect x="5" y="1.5" width="4" height="7" rx="2" stroke="#7A6E63" strokeWidth="1.4" />
+      <path d="M2.5 7c0 2.5 2 4.5 4.5 4.5S11.5 9.5 11.5 7M7 11.5v1.5" stroke="#7A6E63" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ArrowUpIcon({ active }: { active: boolean }) {
+  const c = active ? "#0d1117" : "#7A6E63";
+  return (
+    <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
+      <path d="M7 11V3M3.5 6.5L7 3l3.5 3.5" stroke={c} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
   );
 }
