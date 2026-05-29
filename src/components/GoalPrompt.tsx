@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { useVoice } from "../hooks/useVoice";
 import { api } from "../lib/api";
+import { useTheme } from "../design/ThemeProvider";
+import { Eyebrow } from "../design/primitives";
+import { ar, lt } from "../design/theme";
 import type { AppMode } from "../lib/api";
 
 export interface Clarification {
@@ -30,6 +33,7 @@ const PROMPT_COPY: Record<AppMode, { label: string; placeholder: string }> = {
 };
 
 export function GoalPrompt({ mode, onStart, onBack }: Props) {
+  const T = useTheme();
   const copy = PROMPT_COPY[mode];
   const [value, setValue]               = useState("");
   const [phase, setPhase]               = useState<"input" | "clarifying">("input");
@@ -69,15 +73,20 @@ export function GoalPrompt({ mode, onStart, onBack }: Props) {
     onStart(value.trim(), clarifications);
   }
 
+  const inputStyle: React.CSSProperties = {
+    width: "100%", border: `1px solid ${lt(0.10)}`,
+    background: lt(0.04), borderRadius: 11,
+    padding: "9px 12px", fontSize: 13.5, color: T.ink,
+    outline: "none", fontFamily: "inherit", boxSizing: "border-box",
+  };
+
   if (phase === "clarifying") {
     return (
-      <div className="no-drag flex flex-col gap-3">
-        <p className="font-mono text-[10px] uppercase tracking-widest text-sl-ink3">
-          A few quick questions to get started
-        </p>
+      <div className="no-drag" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <Eyebrow>A few quick questions to get started</Eyebrow>
         {questions.map((q, i) => (
-          <div key={i} className="flex flex-col gap-1.5">
-            <label className="text-xs text-sl-ink2">{q}</label>
+          <div key={i} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <label style={{ fontSize: 12.5, color: T.ink2 }}>{q}</label>
             <input
               type="text"
               value={answers[i] ?? ""}
@@ -96,31 +105,37 @@ export function GoalPrompt({ mode, onStart, onBack }: Props) {
                   }
                 }
               }}
-              className="clarify-input no-drag w-full rounded-xl px-2.5 py-2 text-sm text-sl-ink placeholder:text-sl-ink3 focus:outline-none"
-              style={{
-                border: "1px solid rgba(244,232,218,0.10)",
-                background: "rgba(244,232,218,0.04)",
-                outline: "none",
-              }}
+              className="clarify-input no-drag"
+              style={inputStyle}
               placeholder="(optional)"
               autoFocus={i === 0}
             />
           </div>
         ))}
-        <div className="flex items-center gap-2">
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 2 }}>
           <button
             type="button"
             onClick={() => onStart(value.trim(), [])}
-            className="rounded-xl px-3 py-1.5 text-xs text-sl-ink3 transition hover:text-sl-ink2"
-            style={{ border: "1px solid rgba(244,232,218,0.08)", background: "transparent", cursor: "pointer" }}
+            style={{
+              borderRadius: 9, border: `1px solid ${lt(0.08)}`,
+              background: "transparent", color: T.ink3,
+              fontSize: 12, padding: "7px 14px", cursor: "pointer",
+              transition: "color 150ms",
+            }}
           >
             Skip
           </button>
           <button
             type="button"
             onClick={handleSubmitClarifications}
-            className="ml-auto rounded-xl px-3 py-1.5 text-xs font-semibold"
-            style={{ background: "#8FC4EC", color: "#0d1117", border: 0, cursor: "pointer" }}
+            style={{
+              marginLeft: "auto", borderRadius: 9, border: 0,
+              background: `linear-gradient(180deg, ${T.accent}, ${T.accentDeep})`,
+              color: T.onAccent,
+              fontSize: 12, fontWeight: 600, padding: "7px 18px",
+              cursor: "pointer",
+              boxShadow: `0 4px 12px -4px ${ar(T.accentRGB, 0.7)}`,
+            }}
           >
             Start session
           </button>
@@ -130,18 +145,19 @@ export function GoalPrompt({ mode, onStart, onBack }: Props) {
   }
 
   return (
-    <div className="no-drag flex flex-col gap-2.5">
+    <div className="no-drag" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <button
         type="button"
         onClick={onBack}
-        className="self-start font-mono text-[10px] text-sl-ink3 transition hover:text-sl-ink2"
-        style={{ border: 0, background: "transparent", cursor: "pointer" }}
+        style={{
+          alignSelf: "flex-start", border: 0, background: "transparent",
+          fontFamily: "ui-monospace, monospace", fontSize: 10, color: T.ink3,
+          cursor: "pointer", padding: 0, transition: "color 150ms",
+        }}
       >
         ← Change mode
       </button>
-      <label className="font-mono text-[10px] uppercase tracking-widest text-sl-ink3">
-        {copy.label}
-      </label>
+      <Eyebrow>{copy.label}</Eyebrow>
       <textarea
         value={value}
         onChange={(e) => setValue(e.target.value)}
@@ -153,28 +169,21 @@ export function GoalPrompt({ mode, onStart, onBack }: Props) {
         }}
         rows={3}
         placeholder={copy.placeholder}
-        className="sl-scroll w-full resize-none rounded-xl px-3 py-2.5 text-sm text-sl-ink placeholder:text-sl-ink3 focus:outline-none"
-        style={{
-          border: "1px solid rgba(244,232,218,0.10)",
-          background: "rgba(244,232,218,0.04)",
-          outline: "none",
-        }}
+        className="sl-scroll no-drag"
+        style={{ ...inputStyle, resize: "none" }}
       />
-      <div className="flex items-center gap-2">
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <button
           type="button"
           onClick={() => (voice.state === "recording" ? voice.stop() : voice.start())}
           disabled={voice.state === "transcribing"}
-          className="rounded-xl px-2.5 py-1.5 text-xs font-medium transition disabled:opacity-50"
           style={{
-            border: "1px solid rgba(244,232,218,0.10)",
-            background:
-              voice.state === "recording"
-                ? "rgba(239,68,68,0.12)"
-                : "rgba(244,232,218,0.04)",
-            color:
-              voice.state === "recording" ? "#ef4444" : "#B8A89A",
+            borderRadius: 9, border: `1px solid ${lt(0.10)}`,
+            background: voice.state === "recording" ? "rgba(239,68,68,0.12)" : lt(0.04),
+            color: voice.state === "recording" ? "#ef4444" : T.ink2,
+            fontSize: 12, fontWeight: 500, padding: "7px 14px",
             cursor: voice.state === "transcribing" ? "default" : "pointer",
+            opacity: voice.state === "transcribing" ? 0.5 : 1,
           }}
         >
           {voice.state === "recording"
@@ -187,14 +196,22 @@ export function GoalPrompt({ mode, onStart, onBack }: Props) {
           type="button"
           onClick={() => void handleStart()}
           disabled={value.trim().length === 0 || loadingClarify}
-          className="ml-auto rounded-xl px-4 py-1.5 text-xs font-semibold transition disabled:opacity-40"
-          style={{ background: "#8FC4EC", color: "#0d1117", border: 0, cursor: "pointer" }}
+          style={{
+            marginLeft: "auto", borderRadius: 9, border: 0,
+            background: `linear-gradient(180deg, ${T.accent}, ${T.accentDeep})`,
+            color: T.onAccent,
+            fontSize: 12, fontWeight: 600, padding: "7px 20px",
+            cursor: "pointer",
+            opacity: value.trim().length === 0 || loadingClarify ? 0.4 : 1,
+            boxShadow: `0 4px 12px -4px ${ar(T.accentRGB, 0.7)}`,
+            transition: "opacity 150ms",
+          }}
         >
           {loadingClarify ? "…" : "Start session"}
         </button>
       </div>
       {voice.error && (
-        <p className="text-[11px] text-sl-error">{voice.error}</p>
+        <p style={{ fontSize: 11, color: "#ef4444", margin: 0 }}>{voice.error}</p>
       )}
     </div>
   );

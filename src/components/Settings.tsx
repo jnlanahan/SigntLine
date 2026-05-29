@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useSettings } from "../store/settings";
 import { api } from "../lib/api";
+import { useTheme } from "../design/ThemeProvider";
+import { ar, lt } from "../design/theme";
 import type { DisplayInfo, TtsVoiceId } from "../lib/api";
 import { useTts, getTtsMode } from "../hooks/useTts";
 
@@ -32,6 +34,7 @@ interface Props {
 }
 
 export function Settings({ onClose }: Props) {
+  const T        = useTheme();
   const settings  = useSettings((s) => s.settings);
   const keyStatus = useSettings((s) => s.keyStatus);
   const patch     = useSettings((s) => s.patch);
@@ -42,44 +45,108 @@ export function Settings({ onClose }: Props) {
 
   if (!settings) return null;
 
+  const sectionLabel: React.CSSProperties = {
+    fontFamily: "ui-monospace, monospace",
+    fontSize: 10, color: T.ink3,
+    letterSpacing: "0.08em", textTransform: "uppercase" as const,
+    fontWeight: 600,
+  };
+
+  const selectStyle: React.CSSProperties = {
+    width: "100%", padding: "8px 10px",
+    background: lt(0.04), color: T.ink,
+    border: `1px solid ${lt(0.10)}`,
+    borderRadius: 10, fontSize: 12.5,
+    fontFamily: "inherit", outline: "none",
+    cursor: "pointer", appearance: "none" as const,
+  };
+
+  const accentBtnStyle = (active: boolean): React.CSSProperties => ({
+    flex: 1, padding: "7px 0",
+    borderRadius: 9,
+    border: active ? `1px solid ${ar(T.accentRGB, 0.6)}` : `1px solid ${lt(0.08)}`,
+    background: active ? ar(T.accentRGB, 0.12) : lt(0.04),
+    color: active ? T.accent : T.ink2,
+    fontSize: 12, fontWeight: active ? 600 : 400,
+    cursor: "pointer", fontFamily: "inherit",
+    transition: "all 140ms",
+  });
+
+  const actionBtnStyle: React.CSSProperties = {
+    borderRadius: 9,
+    background: `linear-gradient(180deg, ${T.accent}, ${T.accentDeep})`,
+    color: T.onAccent,
+    fontSize: 12, fontWeight: 600,
+    padding: "7px 14px", border: 0,
+    cursor: "pointer", whiteSpace: "nowrap",
+    fontFamily: "inherit", flexShrink: 0,
+    boxShadow: `0 4px 12px -4px ${ar(T.accentRGB, 0.7)}`,
+  };
+
+  const ghostBtnStyle: React.CSSProperties = {
+    borderRadius: 9,
+    border: `1px solid ${lt(0.08)}`,
+    background: "transparent",
+    color: T.ink2,
+    fontSize: 12, fontWeight: 500,
+    padding: "7px 14px",
+    cursor: "pointer", whiteSpace: "nowrap",
+    fontFamily: "inherit", flexShrink: 0,
+  };
+
   return (
-    <div className="sl-sheet-in absolute inset-0 flex flex-col" style={{ background: "#0d1117" }}>
+    <div
+      className="sl-sheet-in"
+      style={{
+        position: "absolute", inset: 0,
+        display: "flex", flexDirection: "column",
+        background: "rgba(13,14,18,0.97)",
+        fontFamily: "ui-sans-serif, system-ui, Segoe UI, sans-serif",
+        borderRadius: 22,
+      }}
+    >
       {/* Header */}
-      <div
-        className="flex flex-shrink-0 items-center gap-2.5 px-3.5 py-3"
-        style={{
-          borderBottom: "1px solid rgba(244,232,218,0.08)",
-          background: "rgba(10,15,26,0.7)",
-        }}
-      >
+      <div style={{
+        display: "flex", alignItems: "center", gap: 10,
+        padding: "12px 16px",
+        borderBottom: `1px solid ${lt(0.08)}`,
+        flexShrink: 0,
+      }}>
         <button
           type="button"
           onClick={onClose}
-          className="flex h-7 w-7 items-center justify-center rounded-lg transition hover:bg-sl-iconHover"
-          style={{ border: 0, background: "transparent", cursor: "pointer" }}
+          className="sl-ctrl"
+          style={{ width: 30, height: 30, border: 0, borderRadius: 9, background: "transparent", color: T.ink2, display: "grid", placeItems: "center", cursor: "pointer" }}
           title="Back"
         >
-          <BackArrowIcon />
+          <BackArrowIcon c={T.ink2} />
         </button>
-        <h2 className="text-sm font-semibold tracking-tight text-sl-ink">Settings</h2>
+        <h2 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: T.ink, letterSpacing: "-0.01em" }}>
+          Settings
+        </h2>
         <button
           type="button"
           onClick={onClose}
-          className="ml-auto flex h-7 w-7 items-center justify-center rounded-lg transition hover:bg-sl-iconHover"
-          style={{ border: 0, background: "transparent", cursor: "pointer" }}
+          className="sl-ctrl"
+          style={{ marginLeft: "auto", width: 30, height: 30, border: 0, borderRadius: 9, background: "transparent", color: T.ink2, display: "grid", placeItems: "center", cursor: "pointer" }}
           title="Close"
         >
-          <CloseXIcon />
+          <CloseXIcon c={T.ink2} />
         </button>
       </div>
 
       {/* Scrollable body */}
-      <div className="sl-scroll flex flex-1 flex-col gap-[18px] overflow-y-auto px-3.5 py-4">
+      <div className="sl-scroll" style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 20, padding: "16px 16px 20px" }}>
 
         {/* Capture */}
-        <SettingsSection label="Capture">
-          <SettingRow label="Check frequency">
-            <div className="no-drag flex gap-1.5">
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <span style={sectionLabel}>Capture</span>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
+              <span style={{ fontSize: 12.5, fontWeight: 500, color: T.ink }}>Check frequency</span>
+            </div>
+            <div className="no-drag" style={{ display: "flex", gap: 6 }}>
               {FREQ_TIERS.map((tier) => {
                 const active = secToTier(settings.captureIntervalSec) === tier.value;
                 return (
@@ -87,21 +154,7 @@ export function Settings({ onClose }: Props) {
                     key={tier.label}
                     type="button"
                     onClick={() => void patch({ captureIntervalSec: tier.value })}
-                    style={{
-                      flex: 1,
-                      padding: "6px 0",
-                      borderRadius: 9,
-                      border: active
-                        ? "1px solid #8FC4EC"
-                        : "1px solid rgba(244,232,218,0.08)",
-                      background: active ? "rgba(143,196,236,0.12)" : "rgba(244,232,218,0.04)",
-                      color: active ? "#8FC4EC" : "#B8A89A",
-                      fontSize: 12,
-                      fontWeight: active ? 600 : 400,
-                      cursor: "pointer",
-                      fontFamily: "inherit",
-                      transition: "all 140ms",
-                    }}
+                    style={accentBtnStyle(active)}
                   >
                     {tier.label}
                     {"hint" in tier && (
@@ -113,9 +166,10 @@ export function Settings({ onClose }: Props) {
                 );
               })}
             </div>
-          </SettingRow>
+          </div>
 
-          <SettingRow label="Display">
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span style={{ fontSize: 12.5, fontWeight: 500, color: T.ink }}>Display</span>
             <select
               title="Select display"
               value={settings.selectedDisplayId ?? ""}
@@ -129,18 +183,22 @@ export function Settings({ onClose }: Props) {
                 </option>
               ))}
             </select>
-          </SettingRow>
+          </div>
 
-          <SettingRow label="Capture area" hint={
-            settings.captureRegion
-              ? `${settings.captureRegion.width}×${settings.captureRegion.height} region`
-              : "full display"
-          }>
-            <div className="flex items-center gap-2">
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
+              <span style={{ fontSize: 12.5, fontWeight: 500, color: T.ink }}>Capture area</span>
+              <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 10, color: T.ink3 }}>
+                {settings.captureRegion
+                  ? `${settings.captureRegion.width}×${settings.captureRegion.height} region`
+                  : "full display"}
+              </span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <button
                 type="button"
                 onClick={() => { void api().overlay.setAdjust(true); onClose(); }}
-                style={saveBtnStyle}
+                style={actionBtnStyle}
               >
                 Adjust
               </button>
@@ -148,41 +206,46 @@ export function Settings({ onClose }: Props) {
                 <button
                   type="button"
                   onClick={() => void patch({ captureRegion: null })}
-                  style={clearBtnStyle}
+                  style={ghostBtnStyle}
                 >
                   Reset
                 </button>
               )}
             </div>
-          </SettingRow>
-        </SettingsSection>
+          </div>
+        </div>
 
         {/* Window */}
-        <SettingsSection label="Window">
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <span style={sectionLabel}>Window</span>
           <ToggleRow
+            T={T}
             label="Read instructions aloud"
             hint={keyStatus.openai ? "Using OpenAI voice" : "Using system voice"}
             checked={settings.ttsEnabled}
             onChange={(v) => patch({ ttsEnabled: v })}
+            accentRGB={T.accentRGB}
+            accent={T.accent}
           />
-        </SettingsSection>
+        </div>
 
         {/* Voice */}
-        <SettingsSection label="Voice">
-          <VoicePicker disabled={!settings.ttsEnabled || !keyStatus.openai} />
-        </SettingsSection>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <span style={sectionLabel}>Voice</span>
+          <VoicePicker
+            disabled={!settings.ttsEnabled || !keyStatus.openai}
+            selectStyle={selectStyle}
+            ghostBtnStyle={ghostBtnStyle}
+          />
+        </div>
 
         {/* Footer */}
-        <div
-          className="mt-1 text-center"
-          style={{
-            fontFamily: "ui-monospace, monospace",
-            fontSize: 10,
-            color: "#7A6E63",
-            letterSpacing: "0.04em",
-            textTransform: "uppercase",
-          }}
-        >
+        <div style={{
+          marginTop: 4, textAlign: "center",
+          fontFamily: "ui-monospace, monospace",
+          fontSize: 10, color: T.ink3,
+          letterSpacing: "0.06em", textTransform: "uppercase",
+        }}>
           SightLine
         </div>
       </div>
@@ -190,88 +253,49 @@ export function Settings({ onClose }: Props) {
   );
 }
 
-/* ── Settings sub-components ── */
-
-function SettingsSection({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex flex-col gap-2.5">
-      <span
-        style={{
-          fontFamily: "ui-monospace, monospace",
-          fontSize: 10,
-          color: "#7A6E63",
-          letterSpacing: "0.06em",
-          textTransform: "uppercase",
-          fontWeight: 500,
-        }}
-      >
-        {label}
-      </span>
-      {children}
-    </div>
-  );
-}
-
-function SettingRow({
-  label,
-  hint,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex items-baseline justify-between">
-        <span className="text-[12.5px] font-medium text-sl-ink">{label}</span>
-        {hint && (
-          <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 10, color: "#7A6E63" }}>
-            {hint}
-          </span>
-        )}
-      </div>
-      {children}
-    </div>
-  );
-}
+/* ── Sub-components ── */
 
 function ToggleRow({
+  T,
   label,
   hint,
   checked,
   onChange,
+  accentRGB,
+  accent,
 }: {
+  T: ReturnType<typeof useTheme>;
   label: string;
   hint?: string;
   checked: boolean;
   onChange(v: boolean): void;
+  accentRGB: string;
+  accent: string;
 }) {
   return (
-    <div className="flex items-start justify-between gap-2">
-      <div className="flex flex-col">
-        <span className="text-[12.5px] font-medium text-sl-ink">{label}</span>
-        {hint && <span className="mt-0.5 text-[10px] text-sl-ink3">{hint}</span>}
+    <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
+      <div style={{ display: "flex", flexDirection: "column" }}>
+        <span style={{ fontSize: 12.5, fontWeight: 500, color: T.ink }}>{label}</span>
+        {hint && <span style={{ marginTop: 2, fontSize: 10, color: T.ink3 }}>{hint}</span>}
       </div>
       <button
         type="button"
         onClick={() => onChange(!checked)}
         role="switch"
         aria-checked={checked}
-        className="relative flex-shrink-0 rounded-full border-0 transition-colors"
         style={{
+          position: "relative", flexShrink: 0, borderRadius: 999, border: 0,
           width: 34, height: 20,
-          background: checked ? "#8FC4EC" : "rgba(244,232,218,0.06)",
-          cursor: "pointer",
-          padding: 0,
+          background: checked ? ar(accentRGB, 1) : lt(0.06),
+          cursor: "pointer", padding: 0,
           transition: "background 180ms",
         }}
       >
         <span
-          className="absolute top-[2px] rounded-full bg-white shadow"
           style={{
-            left: checked ? 14 : 2,
+            position: "absolute", top: 2, borderRadius: "50%", background: "#fff",
             width: 16, height: 16,
+            left: checked ? 14 : 2,
             boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
             transition: "left 180ms cubic-bezier(0.3,0,0.2,1)",
           }}
@@ -281,54 +305,19 @@ function ToggleRow({
   );
 }
 
-/* ── Shared style objects ── */
-const saveBtnStyle: React.CSSProperties = {
-  borderRadius: 9,
-  background: "#8FC4EC",
-  color: "#0d1117",
-  fontSize: 11.5,
-  fontWeight: 600,
-  padding: "6px 12px",
-  border: 0,
-  cursor: "pointer",
-  whiteSpace: "nowrap",
-  fontFamily: "inherit",
-  flexShrink: 0,
-};
-
-const clearBtnStyle: React.CSSProperties = {
-  borderRadius: 9,
-  border: "1px solid rgba(244,232,218,0.08)",
-  background: "transparent",
-  color: "#B8A89A",
-  fontSize: 11.5,
-  fontWeight: 500,
-  padding: "6px 12px",
-  cursor: "pointer",
-  whiteSpace: "nowrap",
-  fontFamily: "inherit",
-  flexShrink: 0,
-};
-
-const selectStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "7px 10px",
-  background: "rgba(244,232,218,0.04)",
-  color: "#F4E8DA",
-  border: "1px solid rgba(244,232,218,0.08)",
-  borderRadius: 10,
-  fontSize: 12,
-  fontFamily: "inherit",
-  outline: "none",
-  cursor: "pointer",
-  appearance: "none",
-};
-
-/* ── VoicePicker ── */
-function VoicePicker({ disabled }: { disabled: boolean }) {
+function VoicePicker({
+  disabled,
+  selectStyle,
+  ghostBtnStyle,
+}: {
+  disabled: boolean;
+  selectStyle: React.CSSProperties;
+  ghostBtnStyle: React.CSSProperties;
+}) {
   const settings = useSettings((s) => s.settings);
   const patch    = useSettings((s) => s.patch);
   const { speak } = useTts();
+  const T = useTheme();
   const [previewResult, setPreviewResult] = useState<
     "openai" | "system" | "none" | "pending" | null
   >(null);
@@ -345,8 +334,8 @@ function VoicePicker({ disabled }: { disabled: boolean }) {
   }
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-center gap-2">
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <select
           title="Voice"
           disabled={disabled}
@@ -361,48 +350,43 @@ function VoicePicker({ disabled }: { disabled: boolean }) {
         <button
           type="button"
           onClick={handlePreview}
-          style={{
-            ...clearBtnStyle,
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 5,
-          }}
+          style={{ ...ghostBtnStyle, display: "inline-flex", alignItems: "center", gap: 5 }}
           title="Preview voice"
         >
           <svg width="8" height="10" viewBox="0 0 8 10" fill="none">
-            <path d="M1 1l6 4-6 4z" fill="#B8A89A" />
+            <path d="M1 1l6 4-6 4z" fill={T.ink2} />
           </svg>
           Preview
         </button>
       </div>
       {previewResult === "pending" && (
-        <p style={{ fontSize: 10, color: "#7A6E63" }}>Testing…</p>
+        <p style={{ fontSize: 10, color: T.ink3, margin: 0 }}>Testing…</p>
       )}
       {previewResult === "openai" && (
-        <p style={{ fontSize: 10, color: "#5BD08B" }}>✓ Natural voice (OpenAI) — working</p>
+        <p style={{ fontSize: 10, color: "#8FCB66", margin: 0 }}>✓ Natural voice (OpenAI) — working</p>
       )}
       {previewResult === "system" && (
-        <p style={{ fontSize: 10, color: "#f59e0b" }}>⚠ System voice only — add your OpenAI key for natural voice</p>
+        <p style={{ fontSize: 10, color: "#f59e0b", margin: 0 }}>⚠ System voice only — add your OpenAI key for natural voice</p>
       )}
       {previewResult === "none" && (
-        <p style={{ fontSize: 10, color: "#ef4444" }}>✗ No audio — check audio permissions or your API key</p>
+        <p style={{ fontSize: 10, color: "#ef4444", margin: 0 }}>✗ No audio — check audio permissions or your API key</p>
       )}
     </div>
   );
 }
 
 /* ── Icons ── */
-function BackArrowIcon() {
+function BackArrowIcon({ c }: { c?: string }) {
   return (
     <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-      <path d="M9 2L4 7l5 5" stroke="#B8A89A" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M9 2L4 7l5 5" stroke={c || "currentColor"} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
-function CloseXIcon() {
+function CloseXIcon({ c }: { c?: string }) {
   return (
     <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-      <path d="M2.5 2.5l7 7M9.5 2.5l-7 7" stroke="#B8A89A" strokeWidth="1.6" strokeLinecap="round" />
+      <path d="M2.5 2.5l7 7M9.5 2.5l-7 7" stroke={c || "currentColor"} strokeWidth="1.6" strokeLinecap="round" />
     </svg>
   );
 }

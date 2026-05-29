@@ -1,5 +1,8 @@
 import { useState } from "react";
 import { useVoice } from "../hooks/useVoice";
+import { useTheme } from "../design/ThemeProvider";
+import { ar, lt } from "../design/theme";
+import { ISend } from "../design/icons";
 import type { AppMode } from "../lib/api";
 
 const PLACEHOLDER: Record<AppMode, string> = {
@@ -15,6 +18,7 @@ interface Props {
 }
 
 export function FollowUpInput({ isThinking, mode, onSubmit }: Props) {
+  const T = useTheme();
   const [value, setValue] = useState("");
   const [queued, setQueued] = useState(false);
   const voice = useVoice((text) => {
@@ -32,12 +36,17 @@ export function FollowUpInput({ isThinking, mode, onSubmit }: Props) {
     }
   }
 
+  const isRecording = voice.state === "recording";
+  const isTranscribing = voice.state === "transcribing";
+  const hasValue = value.trim().length > 0;
+
   return (
     <div
-      className="no-drag flex items-center gap-2 rounded-xl border px-3 py-1.5"
+      className="no-drag"
       style={{
-        borderColor: "rgba(244,232,218,0.10)",
-        background: "rgba(244,232,218,0.04)",
+        display: "flex", alignItems: "center", gap: 6,
+        background: lt(0.05), border: `1px solid ${lt(0.12)}`,
+        borderRadius: 13, padding: "5px 6px 5px 14px",
         boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
       }}
     >
@@ -52,41 +61,33 @@ export function FollowUpInput({ isThinking, mode, onSubmit }: Props) {
             submit();
           }
         }}
-        className="flex-1 bg-transparent text-sm text-sl-ink placeholder:text-sl-ink3 focus:outline-none"
+        style={{
+          flex: 1, minWidth: 0, border: 0, outline: "none",
+          background: "transparent", color: T.ink,
+          fontSize: 13.5, fontFamily: "inherit",
+        }}
       />
 
       {/* Mic button */}
       <button
         type="button"
-        onClick={() => (voice.state === "recording" ? voice.stop() : voice.start())}
-        disabled={voice.state === "transcribing"}
-        title={
-          voice.state === "recording"
-            ? "Stop recording"
-            : voice.state === "transcribing"
-              ? "Transcribing…"
-              : "Voice input"
-        }
-        className="flex items-center justify-center rounded-lg p-1.5 transition disabled:opacity-50"
+        onClick={() => (isRecording ? voice.stop() : voice.start())}
+        disabled={isTranscribing}
+        title={isRecording ? "Stop recording" : isTranscribing ? "Transcribing…" : "Voice input"}
+        className="sl-ctrl"
         style={{
-          background:
-            voice.state === "recording"
-              ? "rgba(239,68,68,0.15)"
-              : "transparent",
-          color:
-            voice.state === "recording"
-              ? "#ef4444"
-              : "#7A6E63",
-          border: 0,
-          cursor: voice.state === "transcribing" ? "default" : "pointer",
+          width: 32, height: 32, border: 0, borderRadius: 9, cursor: isTranscribing ? "default" : "pointer",
+          background: isRecording ? "rgba(239,68,68,0.15)" : "transparent",
+          color: isRecording ? "#ef4444" : T.ink2,
+          display: "grid", placeItems: "center", opacity: isTranscribing ? 0.5 : 1,
         }}
       >
-        {voice.state === "recording" ? (
+        {isRecording ? (
           <span style={{ fontSize: 10, fontWeight: 700, color: "#ef4444" }}>● REC</span>
-        ) : voice.state === "transcribing" ? (
-          <span style={{ fontSize: 10, color: "#7A6E63" }}>…</span>
+        ) : isTranscribing ? (
+          <span style={{ fontSize: 10, color: T.ink3 }}>…</span>
         ) : (
-          <MicIcon />
+          <MicIcon c={T.ink2} />
         )}
       </button>
 
@@ -94,41 +95,34 @@ export function FollowUpInput({ isThinking, mode, onSubmit }: Props) {
       <button
         type="button"
         onClick={submit}
-        disabled={value.trim().length === 0}
-        className="flex items-center justify-center rounded-lg transition"
+        disabled={!hasValue}
+        title="Send"
         style={{
-          width: 28, height: 28,
-          border: 0,
-          background: value.trim() ? "#8FC4EC" : "rgba(244,232,218,0.06)",
-          color: value.trim() ? "#0d1117" : "#7A6E63",
-          cursor: value.trim() ? "pointer" : "default",
-          opacity: value.trim() ? 1 : 0.6,
+          width: 32, height: 32, border: 0, borderRadius: 9,
+          background: hasValue ? `linear-gradient(180deg, ${T.accent}, ${T.accentDeep})` : lt(0.06),
+          color: hasValue ? T.onAccent : T.ink3,
+          display: "grid", placeItems: "center",
+          cursor: hasValue ? "pointer" : "default",
+          opacity: hasValue ? 1 : 0.5,
+          boxShadow: hasValue ? `0 4px 12px -4px ${ar(T.accentRGB, 0.7)}` : "none",
+          transition: "all 150ms",
         }}
       >
         {queued ? (
           <span style={{ fontSize: 11, fontWeight: 700 }}>✓</span>
         ) : (
-          <ArrowUpIcon active={value.trim().length > 0} />
+          <ISend c={hasValue ? T.onAccent : T.ink3} />
         )}
       </button>
     </div>
   );
 }
 
-function MicIcon() {
+function MicIcon({ c }: { c?: string }) {
   return (
     <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-      <rect x="5" y="1.5" width="4" height="7" rx="2" stroke="#7A6E63" strokeWidth="1.4" />
-      <path d="M2.5 7c0 2.5 2 4.5 4.5 4.5S11.5 9.5 11.5 7M7 11.5v1.5" stroke="#7A6E63" strokeWidth="1.4" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function ArrowUpIcon({ active }: { active: boolean }) {
-  const c = active ? "#0d1117" : "#7A6E63";
-  return (
-    <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
-      <path d="M7 11V3M3.5 6.5L7 3l3.5 3.5" stroke={c} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <rect x="5" y="1.5" width="4" height="7" rx="2" stroke={c || "currentColor"} strokeWidth="1.4" />
+      <path d="M2.5 7c0 2.5 2 4.5 4.5 4.5S11.5 9.5 11.5 7M7 11.5v1.5" stroke={c || "currentColor"} strokeWidth="1.4" strokeLinecap="round" />
     </svg>
   );
 }

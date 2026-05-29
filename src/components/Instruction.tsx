@@ -1,4 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { useTheme } from "../design/ThemeProvider";
+import { Eyebrow } from "../design/primitives";
+import { ar, lt } from "../design/theme";
 
 interface Props {
   instruction: string;
@@ -37,14 +40,17 @@ function useTypewriter(text: string): string {
 }
 
 export function Instruction({ instruction, status, done, error, researchQuery }: Props) {
+  const T = useTheme();
   const display = useTypewriter(instruction);
 
   if (error) {
     return (
       <div
-        className="animate-fade-in rounded-xl border px-3 py-2.5 text-sm text-sl-error"
+        className="animate-fade-in"
         style={{
-          borderColor: "rgba(239,68,68,0.4)",
+          borderRadius: 13, padding: "12px 14px", fontSize: 13.5,
+          color: "#ef4444",
+          border: `1px solid rgba(239,68,68,0.35)`,
           background: "rgba(239,68,68,0.08)",
           borderLeft: "2px solid rgba(239,68,68,0.7)",
         }}
@@ -57,15 +63,22 @@ export function Instruction({ instruction, status, done, error, researchQuery }:
   if (done) {
     return (
       <div
-        className="sl-selectable animate-fade-in rounded-xl border px-3 py-2.5 text-sm leading-snug text-sl-ok"
+        className="sl-selectable animate-fade-in"
         style={{
-          borderColor: "rgba(91,208,139,0.35)",
-          background: "rgba(91,208,139,0.08)",
+          borderRadius: 13, padding: "12px 14px", fontSize: 13.5, lineHeight: 1.5,
+          color: "#8FCB66",
+          border: `1px solid rgba(143,203,102,0.35)`,
+          background: "rgba(143,203,102,0.08)",
         }}
       >
         <span
-          className="mr-1.5 inline-flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-bold"
-          style={{ background: "rgba(91,208,139,0.2)", color: "#5BD08B" }}
+          style={{
+            display: "inline-flex", width: 16, height: 16,
+            alignItems: "center", justifyContent: "center",
+            borderRadius: "50%", marginRight: 8,
+            background: "rgba(143,203,102,0.2)", color: "#8FCB66",
+            fontSize: 10, fontWeight: 700, verticalAlign: "middle",
+          }}
         >
           ✓
         </span>
@@ -77,19 +90,20 @@ export function Instruction({ instruction, status, done, error, researchQuery }:
   if (status === "researching") {
     return (
       <div
-        className="rounded-xl border px-3 py-2.5 text-sm text-sl-thinking"
         style={{
-          borderColor: "rgba(245,158,11,0.35)",
+          borderRadius: 13, padding: "12px 14px", fontSize: 13.5,
+          color: "#f59e0b",
+          border: `1px solid rgba(245,158,11,0.35)`,
           background: "rgba(245,158,11,0.08)",
         }}
       >
         Looking something up…
         {researchQuery && (
-          <span className="mt-0.5 block font-mono text-xs text-sl-ink3">
+          <span style={{ display: "block", marginTop: 3, fontFamily: "ui-monospace, monospace", fontSize: 11, color: T.ink3 }}>
             "{researchQuery}"
           </span>
         )}
-        <span className="mt-1 block text-xs text-sl-ink3">
+        <span style={{ display: "block", marginTop: 4, fontSize: 12, color: T.ink3 }}>
           Resume when you have the info.
         </span>
       </div>
@@ -99,12 +113,18 @@ export function Instruction({ instruction, status, done, error, researchQuery }:
   if (status === "clarifying") {
     return (
       <div
-        className="flex items-center gap-2 rounded-xl border px-3 py-2.5 text-sm text-sl-ink2"
-        style={{ borderColor: "rgba(244,232,218,0.08)", background: "rgba(244,232,218,0.04)" }}
+        style={{
+          display: "flex", alignItems: "center", gap: 10,
+          borderRadius: 13, padding: "12px 14px", fontSize: 13.5, color: T.ink2,
+          border: `1px solid ${lt(0.08)}`, background: lt(0.04),
+        }}
       >
         <span
-          className="inline-block h-3 w-3 rounded-full border-2 border-t-transparent spin-soft"
-          style={{ borderColor: "#f59e0b", borderTopColor: "transparent" }}
+          className="spin-soft"
+          style={{
+            display: "inline-block", width: 13, height: 13, borderRadius: "50%",
+            border: "2px solid #f59e0b", borderTopColor: "transparent", flexShrink: 0,
+          }}
         />
         Setting up your session…
       </div>
@@ -114,12 +134,18 @@ export function Instruction({ instruction, status, done, error, researchQuery }:
   if (status === "thinking" && !instruction) {
     return (
       <div
-        className="flex items-center gap-2 rounded-xl border px-3 py-2.5 text-sm text-sl-ink2"
-        style={{ borderColor: "rgba(244,232,218,0.08)", background: "rgba(244,232,218,0.04)" }}
+        style={{
+          display: "flex", alignItems: "center", gap: 10,
+          borderRadius: 13, padding: "12px 14px", fontSize: 13.5, color: T.ink2,
+          border: `1px solid ${lt(0.08)}`, background: lt(0.04),
+        }}
       >
         <span
-          className="inline-block h-3 w-3 rounded-full border-2 border-t-transparent spin-soft"
-          style={{ borderColor: "#f59e0b", borderTopColor: "transparent" }}
+          className="spin-soft"
+          style={{
+            display: "inline-block", width: 13, height: 13, borderRadius: "50%",
+            border: "2px solid #f59e0b", borderTopColor: "transparent", flexShrink: 0,
+          }}
         />
         Thinking…
       </div>
@@ -129,8 +155,10 @@ export function Instruction({ instruction, status, done, error, researchQuery }:
   if (!instruction) {
     return (
       <div
-        className="rounded-xl border px-3 py-2.5 text-sm text-sl-ink3"
-        style={{ borderColor: "rgba(244,232,218,0.06)", background: "rgba(244,232,218,0.02)" }}
+        style={{
+          borderRadius: 13, padding: "12px 14px", fontSize: 13.5, color: T.ink3,
+          border: `1px solid ${lt(0.06)}`, background: lt(0.02),
+        }}
       >
         Tell SightLine what you want to do, then start a session.
       </div>
@@ -139,20 +167,31 @@ export function Instruction({ instruction, status, done, error, researchQuery }:
 
   return (
     <div
-      className="sl-selectable animate-fade-in rounded-xl border px-3 py-2.5 text-sm leading-snug text-sl-ink"
       style={{
-        borderColor: "rgba(143,196,236,0.25)",
-        background: "rgba(244,232,218,0.04)",
-        borderLeft: "2px solid rgba(143,196,236,0.5)",
+        borderRadius: 13,
+        background: "linear-gradient(180deg, #121419 0%, #0a0b0e 100%)",
+        border: `1px solid ${lt(0.07)}`,
+        boxShadow: "0 10px 30px -12px rgba(0,0,0,0.8)",
+        padding: "13px 15px",
       }}
     >
-      {display}
-      {display.length < instruction.length && (
-        <span
-          className="ml-0.5 inline-block w-0.5 animate-pulse"
-          style={{ background: "#8FC4EC", height: "0.9em", verticalAlign: "text-bottom" }}
-        />
-      )}
+      <Eyebrow>Current step</Eyebrow>
+      <div
+        className="sl-selectable animate-fade-in"
+        style={{ marginTop: 8, fontSize: 14, lineHeight: 1.55, color: "#E6EAF0" }}
+      >
+        {display}
+        {display.length < instruction.length && (
+          <span
+            style={{
+              display: "inline-block", width: 2, marginLeft: 2,
+              background: T.accent, height: "0.9em",
+              verticalAlign: "text-bottom",
+              animation: "sl-blink 1.6s ease-in-out infinite",
+            }}
+          />
+        )}
+      </div>
     </div>
   );
 }

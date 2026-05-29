@@ -1,14 +1,19 @@
+import { useTheme } from "../design/ThemeProvider";
+import { Eyebrow } from "../design/primitives";
+import { ISupport, IClipboard, ICap, IChevron } from "../design/icons";
+import { ar, lt } from "../design/theme";
 import type { AppMode } from "../lib/api";
 
 interface Props {
   onSelect(mode: AppMode): void;
+  onSettings?(): void;
 }
 
 interface ModeCard {
   mode: AppMode;
   title: string;
   blurb: string;
-  icon: string;
+  Icon: (p: { c?: string }) => JSX.Element;
 }
 
 const MODES: ModeCard[] = [
@@ -16,67 +21,85 @@ const MODES: ModeCard[] = [
     mode: "tech_support",
     title: "Tech Support",
     blurb: "Walks you through a task step by step while watching your screen.",
-    icon: "🛠",
+    Icon: ISupport,
   },
   {
     mode: "training",
     title: "Training",
     blurb: "Build a structured training plan together as you demonstrate it on screen.",
-    icon: "📋",
+    Icon: IClipboard,
   },
   {
     mode: "teacher",
     title: "Teacher",
-    blurb: "Learn a subject from sources you choose together — a PDF, a paper, a site.",
-    icon: "🎓",
+    blurb: "Learn a subject from sources you choose — a PDF, a paper, a site.",
+    Icon: ICap,
   },
 ];
 
 export function ModeSelect({ onSelect }: Props) {
+  const T = useTheme();
   return (
-    <div className="no-drag flex flex-col gap-3">
-      <div className="flex flex-col gap-1">
-        <p className="font-mono text-[10px] uppercase tracking-widest text-sl-ink3">
-          Choose a mode
-        </p>
-        <p className="text-xs text-sl-ink3">
+    <div className="no-drag" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <div>
+        <Eyebrow>Choose a mode</Eyebrow>
+        <div style={{ marginTop: 5, fontSize: 12.5, color: T.ink2 }}>
           SightLine can see your screen in every mode.
-        </p>
+        </div>
       </div>
-      <div className="flex flex-col gap-2">
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {MODES.map((m) => (
-          <ModeCard key={m.mode} card={m} onSelect={onSelect} />
+          <ModeCardRow key={m.mode} card={m} onSelect={onSelect} />
         ))}
       </div>
     </div>
   );
 }
 
-function ModeCard({ card, onSelect }: { card: ModeCard; onSelect(m: AppMode): void }) {
+function ModeCardRow({ card, onSelect }: { card: ModeCard; onSelect(m: AppMode): void }) {
+  const T = useTheme();
+  const { Icon } = card;
+
   return (
-    <button
-      type="button"
+    <div
+      className="sl-card no-drag"
       onClick={() => onSelect(card.mode)}
-      className="flex items-start gap-3 rounded-xl border px-3 py-3 text-left transition"
       style={{
-        borderColor: "rgba(244,232,218,0.08)",
-        background: "rgba(244,232,218,0.03)",
-        cursor: "pointer",
+        display: "flex", gap: 12, alignItems: "flex-start",
+        padding: "12px 13px", borderRadius: 13, cursor: "pointer",
+        background: lt(0.035),
+        border: `1px solid ${lt(0.08)}`,
       }}
       onMouseEnter={(e) => {
-        (e.currentTarget as HTMLButtonElement).style.borderColor = "rgba(143,196,236,0.35)";
-        (e.currentTarget as HTMLButtonElement).style.background  = "rgba(90,147,199,0.08)";
+        const el = e.currentTarget as HTMLDivElement;
+        el.style.background = ar(T.accentRGB, 0.08);
+        el.style.borderColor = ar(T.accentRGB, 0.28);
       }}
       onMouseLeave={(e) => {
-        (e.currentTarget as HTMLButtonElement).style.borderColor = "rgba(244,232,218,0.08)";
-        (e.currentTarget as HTMLButtonElement).style.background  = "rgba(244,232,218,0.03)";
+        const el = e.currentTarget as HTMLDivElement;
+        el.style.background = lt(0.035);
+        el.style.borderColor = lt(0.08);
       }}
     >
-      <span className="mt-0.5 text-lg leading-none">{card.icon}</span>
-      <span className="flex flex-col gap-0.5">
-        <span className="text-sm font-semibold tracking-tight text-sl-ink">{card.title}</span>
-        <span className="text-xs leading-snug text-sl-ink2">{card.blurb}</span>
+      <span style={{
+        width: 38, height: 38, borderRadius: 10, flexShrink: 0,
+        display: "grid", placeItems: "center",
+        background: lt(0.05), color: T.ink2,
+        border: `1px solid ${lt(0.08)}`,
+      }}>
+        <Icon />
       </span>
-    </button>
+      <span style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 3 }}>
+        <span style={{ fontSize: 14, fontWeight: 650, color: T.ink, letterSpacing: "-0.01em" }}>
+          {card.title}
+        </span>
+        <span style={{ fontSize: 12, lineHeight: 1.45, color: T.ink2 }}>
+          {card.blurb}
+        </span>
+      </span>
+      <span style={{ color: T.ink3, alignSelf: "center", flexShrink: 0 }}>
+        <IChevron />
+      </span>
+    </div>
   );
 }

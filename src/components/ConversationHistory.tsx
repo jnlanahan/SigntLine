@@ -1,4 +1,6 @@
 import { useEffect, useRef } from "react";
+import { useTheme } from "../design/ThemeProvider";
+import { ar, lt } from "../design/theme";
 import type { ConversationTurn } from "../../electron/types";
 
 interface Props {
@@ -6,6 +8,7 @@ interface Props {
 }
 
 export function ConversationHistory({ turns }: Props) {
+  const T = useTheme();
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const visible = turns.filter(
@@ -19,30 +22,31 @@ export function ConversationHistory({ turns }: Props) {
   if (visible.length === 0) return null;
 
   return (
-    <div className="sl-selectable flex flex-col gap-1.5">
+    <div className="sl-selectable" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       {visible.map((turn, i) => {
         const isUser = turn.role === "user";
         return (
           <div
             key={i}
-            className={`flex ${isUser ? "justify-end" : "justify-start"}`}
+            style={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start" }}
           >
             <div
-              className="max-w-[85%] px-3 py-2 text-[13px] leading-snug"
-              style={
-                isUser
+              style={{
+                maxWidth: "85%", padding: "9px 13px",
+                fontSize: 13, lineHeight: 1.5,
+                ...(isUser
                   ? {
-                      background: "linear-gradient(180deg, #8FC4EC 0%, #5A93C7 100%)",
-                      color: "#0d1117",
+                      background: `linear-gradient(180deg, ${T.accent} 0%, ${T.accentDeep} 100%)`,
+                      color: T.onAccent,
                       borderRadius: "14px 14px 4px 14px",
                     }
                   : {
-                      background: "rgba(244,232,218,0.05)",
-                      color: "#F4E8DA",
-                      border: "1px solid rgba(244,232,218,0.08)",
+                      background: lt(0.05),
+                      color: T.ink,
+                      border: `1px solid ${lt(0.08)}`,
                       borderRadius: "14px 14px 14px 4px",
-                    }
-              }
+                    }),
+              }}
             >
               {turn.content}
             </div>

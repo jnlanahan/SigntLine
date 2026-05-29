@@ -1,0 +1,25 @@
+/* sightline/sightline.css
+   Keyframes for the SightLine overlay animations. Imported automatically by
+   the package index; if your bundler doesn't import CSS from JS, add this file
+   to your global stylesheet instead. */
+
+@keyframes sl-bar {
+  0%, 100% { transform: scaleY(0.16); opacity: 0.6; }
+  50%      { transform: scaleY(1);    opacity: 1; }
+}
+@keyframes sl-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes sl-bloom {
+  0%, 100% { opacity: 0.72; transform: scale(0.98); }
+  50%      { opacity: 1;    transform: scale(1.03); }
+}
+@keyframes sl-blink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
+
+/* hover affordances (optional — purely cosmetic) */
+.sl-ctrl { transition: background 150ms, color 150ms; }
+.sl-ctrl:hover { background: rgba(226, 232, 242, 0.09); color: #f1f4f8; }
+.sl-card { transition: border-color 150ms, background 150ms; }
