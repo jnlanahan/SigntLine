@@ -11,6 +11,7 @@ const DEFAULTS: Settings = {
   hasSeenPrivacyNotice: false,
   ttsEnabled: false,
   ttsVoice: "nova",
+  accentColor: "lime",
 };
 
 function settingsPath(): string {

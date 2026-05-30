@@ -1,7 +1,8 @@
 // sightline/theme.ts
 // Accent palettes + theme tokens for the SightLine overlay components.
 
-export type AccentName = "lime" | "cobalt" | "rose" | "slate";
+import type { AccentName } from "../../electron/types";
+export type { AccentName };
 
 export interface AccentDef {
   accent: string;

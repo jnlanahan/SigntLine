@@ -69,6 +69,8 @@ export type TtsVoiceId =
   | "coral"
   | "sage";
 
+export type AccentName = "lime" | "cobalt" | "rose" | "slate";
+
 export interface Settings {
   captureIntervalSec: number;
   opacity: number;
@@ -77,6 +79,7 @@ export interface Settings {
   hasSeenPrivacyNotice: boolean;
   ttsEnabled: boolean;
   ttsVoice: TtsVoiceId;
+  accentColor: AccentName;
 }
 
 export interface DisplayInfo {

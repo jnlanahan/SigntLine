@@ -3,8 +3,15 @@ import { useSettings } from "../store/settings";
 import { api } from "../lib/api";
 import { useTheme } from "../design/ThemeProvider";
 import { ar, lt } from "../design/theme";
-import type { DisplayInfo, TtsVoiceId } from "../lib/api";
+import type { AccentName, DisplayInfo, TtsVoiceId } from "../lib/api";
 import { useTts, getTtsMode } from "../hooks/useTts";
+
+const ACCENT_OPTIONS: { name: AccentName; label: string; color: string; rgb: string }[] = [
+  { name: "lime",   label: "Lime",   color: "#C2E84B", rgb: "194,232,75"  },
+  { name: "cobalt", label: "Cobalt", color: "#4F8BF2", rgb: "79,139,242"  },
+  { name: "rose",   label: "Rose",   color: "#FF6B81", rgb: "255,107,129" },
+  { name: "slate",  label: "Slate",  color: "#9FB2C8", rgb: "159,178,200" },
+];
 
 const FREQ_TIERS = [
   { label: "Low",  value: 30, hint: "saves tokens" },
@@ -212,6 +219,65 @@ export function Settings({ onClose }: Props) {
                 </button>
               )}
             </div>
+          </div>
+        </div>
+
+        {/* Appearance */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <span style={sectionLabel}>Appearance</span>
+
+          {/* Accent color */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span style={{ fontSize: 12.5, fontWeight: 500, color: T.ink }}>Accent color</span>
+            <div className="no-drag" style={{ display: "flex", gap: 6 }}>
+              {ACCENT_OPTIONS.map((opt) => {
+                const active = settings.accentColor === opt.name;
+                return (
+                  <button
+                    key={opt.name}
+                    type="button"
+                    title={opt.label}
+                    onClick={() => void patch({ accentColor: opt.name })}
+                    style={{
+                      flex: 1, padding: "8px 0",
+                      borderRadius: 9,
+                      border: active ? `2px solid ${opt.color}` : `1px solid ${lt(0.08)}`,
+                      background: active ? `rgba(${opt.rgb},0.15)` : lt(0.04),
+                      cursor: "pointer",
+                      display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
+                      transition: "all 140ms",
+                    }}
+                  >
+                    <span style={{ width: 14, height: 14, borderRadius: "50%", background: opt.color, display: "block" }} />
+                    <span style={{ fontSize: 10, color: active ? opt.color : T.ink3, fontWeight: active ? 600 : 400, fontFamily: "ui-monospace, monospace" }}>
+                      {opt.label}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Idle opacity */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between" }}>
+              <span style={{ fontSize: 12.5, fontWeight: 500, color: T.ink }}>Idle opacity</span>
+              <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 10, color: T.ink3 }}>
+                {Math.round(settings.opacity * 100)}%
+              </span>
+            </div>
+            <input
+              type="range"
+              min={30} max={100} step={1}
+              value={Math.round(settings.opacity * 100)}
+              onChange={(e) => void patch({ opacity: Number(e.target.value) / 100 })}
+              className="no-drag"
+              style={{ width: "100%", accentColor: T.accent }}
+              title="Idle opacity"
+            />
+            <span style={{ fontSize: 10, color: T.ink3 }}>
+              How visible the panel stays while you work in other apps
+            </span>
           </div>
         </div>
 
