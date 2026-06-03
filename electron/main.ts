@@ -23,13 +23,14 @@ import {
 import {
   getClarifications,
   getNextInstruction,
+  getSessionPlan,
   MissingApiKeyError,
   RateLimitError,
 } from "./claude";
 import { MissingOpenAIKeyError, transcribe } from "./whisper";
 import { speakText, type TtsVoice } from "./openai-tts";
 import { hasGoogleCredentials, speakTextGoogle } from "./google-tts";
-import type { AppMode, CaptureFrame, ConversationTurn, UploadedContext } from "./types";
+import type { AppMode, Clarification, CaptureFrame, ConversationTurn, UploadedContext } from "./types";
 import { uIOhook } from "uiohook-napi";
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || "http://localhost:5173";
@@ -532,6 +533,24 @@ function registerIpc() {
     async (_e: IpcMainInvokeEvent, args: { mode: AppMode; goal: string }) => {
       try {
         return await getClarifications(args);
+      } catch (err) {
+        if (err instanceof MissingApiKeyError) {
+          return { __error: "missing_api_key" } as const;
+        }
+        const msg = err instanceof Error ? err.message : String(err);
+        return { __error: "request_failed", message: msg } as const;
+      }
+    },
+  );
+
+  ipcMain.handle(
+    "claude:get-session-plan",
+    async (
+      _e: IpcMainInvokeEvent,
+      args: { mode: AppMode; goal: string; clarifications: Clarification[] },
+    ) => {
+      try {
+        return await getSessionPlan(args);
       } catch (err) {
         if (err instanceof MissingApiKeyError) {
           return { __error: "missing_api_key" } as const;

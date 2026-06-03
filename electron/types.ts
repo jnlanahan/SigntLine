@@ -42,11 +42,11 @@ export interface CaptureRegion {
 export interface InstructionResponse {
   instruction: string;
   completedSteps: string[];
+  upcomingSteps: string[];
+  digression: boolean;
   done: boolean;
   needsResearch: boolean;
   researchQuery: string;
-  // Durable memory the agent chooses to record (research findings, decisions,
-  // account/version details). Empty string when there's nothing new to note.
   notes: string;
 }
 
@@ -55,8 +55,23 @@ export interface UploadedContext {
   text: string;
 }
 
+export interface Clarification {
+  question: string;
+  answer: string;
+}
+
+export interface ClarificationQuestion {
+  question: string;
+  options: string[];
+}
+
 export interface ClarificationResponse {
-  questions: string[];
+  questions: ClarificationQuestion[];
+}
+
+export interface SessionPlan {
+  overview: string;
+  steps: string[];
 }
 
 export type TtsVoiceId =
@@ -105,6 +120,7 @@ export type IpcChannel =
   | "capture:once"
   | "files:pick-context"
   | "claude:next-instruction"
+  | "claude:get-session-plan"
   | "whisper:transcribe"
   | "window:set-opacity"
   | "window:set-ignore-mouse"

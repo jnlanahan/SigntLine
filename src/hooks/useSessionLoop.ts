@@ -238,12 +238,31 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
         useSession.getState().appendAgentNote(result.notes.trim());
       }
 
+      // Digression: user navigated away from the task. Speak a warm pause
+      // message and stop the loop — it resumes when the user sends a follow-up.
+      if (result.digression) {
+        useSession.getState().setDiverted(true);
+        useSession.getState().setLastProcessedHash(newHash);
+        useSession.getState().setInstruction(result.instruction);
+        useSession.getState().appendTurn({
+          role: "assistant",
+          content: result.instruction,
+          timestamp: Date.now(),
+        });
+        useSession.getState().setLastSpokenInstruction(result.instruction);
+        const ttsEnabled = useSettings.getState().settings?.ttsEnabled;
+        if (ttsEnabled && !earlySpoken) speakRef.current(result.instruction);
+        useSession.getState().setStatus("waiting");
+        return;
+      }
+
       const lastSpoken = useSession.getState().lastSpokenInstruction;
       const isRepeat =
         result.instruction &&
         instructionsAreSimilar(result.instruction, lastSpoken ?? "");
 
       useSession.getState().setCompletedSteps(result.completedSteps);
+      useSession.getState().setUpcomingSteps(result.upcomingSteps ?? []);
       useSession.getState().setDone(result.done);
       useSession.getState().setLastProcessedHash(newHash);
 
@@ -401,6 +420,18 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
       if (state.mode !== "teacher") return;
       if (state.status !== "watching") return;
       void tickRef.current();
+    });
+    return unsub;
+  }, []);
+
+  // Digression recovery: when a follow-up arrives while the user is diverted,
+  // clear the diverted flag so the UI returns to normal watching state.
+  useEffect(() => {
+    const unsub = useSession.subscribe((state, prev) => {
+      if (state.pendingFollowUp === prev.pendingFollowUp) return;
+      if (!state.pendingFollowUp) return;
+      if (!state.diverted) return;
+      useSession.getState().setDiverted(false);
     });
     return unsub;
   }, []);

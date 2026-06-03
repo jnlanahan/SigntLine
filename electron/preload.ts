@@ -2,12 +2,14 @@ import { contextBridge, ipcRenderer } from "electron";
 import type {
   ApiKeyStatus,
   AppMode,
+  Clarification,
   CaptureFrame,
   CaptureRegion,
   ClarificationResponse,
   ConversationTurn,
   DisplayInfo,
   InstructionResponse,
+  SessionPlan,
   Settings,
   TtsVoiceId,
   UploadedContext,
@@ -52,6 +54,11 @@ export interface SightLineApi {
     getClarifications(args: { mode: AppMode; goal: string }): Promise<
       ClarificationResponse | { __error: string; message?: string }
     >;
+    getSessionPlan(args: {
+      mode: AppMode;
+      goal: string;
+      clarifications: Clarification[];
+    }): Promise<SessionPlan | { __error: string; message?: string }>;
     onInstructionReady(cb: (text: string) => void): () => void;
   };
   whisper: {
@@ -117,6 +124,8 @@ const api: SightLineApi = {
       ipcRenderer.invoke("claude:next-instruction", args),
     getClarifications: (args) =>
       ipcRenderer.invoke("claude:get-clarifications", args),
+    getSessionPlan: (args) =>
+      ipcRenderer.invoke("claude:get-session-plan", args),
     onInstructionReady: (cb) => {
       const handler = (_: Electron.IpcRendererEvent, text: string) => cb(text);
       ipcRenderer.on("claude:instruction-ready", handler);

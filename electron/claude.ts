@@ -2,9 +2,11 @@ import Anthropic from "@anthropic-ai/sdk";
 import type {
   AppMode,
   CaptureFrame,
+  Clarification,
   ClarificationResponse,
   ConversationTurn,
   InstructionResponse,
+  SessionPlan,
 } from "./types";
 import { getKey } from "./credentials";
 
@@ -47,6 +49,8 @@ Rules:
 - "done" is true only when the user says they've learned what they came to learn.`;
 
 const VOICE_RULES = `Voice rules (spoken text comes through TTS, so prefer short conversational sentences with natural rhythm):
+- Sound like a human, not a script. Use contractions ("you'll", "it's", "let's", "we'll"). Drop filler openers like "Now," or "Please." Speak like you're sitting next to the person.
+- Make instructions feel like suggestions, not commands. "Go ahead and click…" beats "Click…". "You'll want to…" beats "You must…".
 - Keep responses tight — usually 2 to 4 short sentences, never more than 80 words.
 - Vary your openers. Mix: "Okay, go ahead and…", "Cool — next up…", "Alright, now…", "Nice. Then…", "From here, just…", "Quick one —", "Easy part:", "Go ahead and…". Never repeat the same opener twice in a row.
 - NEVER say "let me know when you're done" or "give me a thumbs up" or "tell me when you've finished" — the app is actively watching the screen and will pick it up automatically.
@@ -58,9 +62,11 @@ const VOICE_RULES = `Voice rules (spoken text comes through TTS, so prefer short
 
 const OUTPUT_RULES = `Output rules:
 - Respond with a JSON object only, no prose around it, no code fences.
-- Schema: {"instruction": string, "completed_steps": string[], "done": boolean, "needsResearch": boolean, "researchQuery": string, "notes": string}
+- Schema: {"instruction": string, "completed_steps": string[], "upcoming_steps": string[], "digression": boolean, "done": boolean, "needsResearch": boolean, "researchQuery": string, "notes": string}
 - "instruction" is your next message to the user — conversational tone, under 80 words.
 - "completed_steps" is the full running list as short phrases (3-7 words each), per the mode rules above. Never duplicate.
+- "upcoming_steps" is an array of 2-4 predicted next steps after the current one (short phrases, 3-7 words each). Update this list as the plan evolves. Use an empty array in the final stretch or when steps are unclear.
+- "digression" is true ONLY when the screen clearly shows the user has navigated away from the task to something unrelated (social media, personal browsing, a completely different app). Do NOT set true for normal task navigation (switching browsers, opening a referenced file, checking docs). When digression is true, set instruction to a short warm pause message like "No worries — take your time. I'll be right here when you're ready." and set upcoming_steps to [].
 - "done" follows the mode rules above; write a short, punchy wrap-up when done and give no further steps.
 - "needsResearch" is true ONLY when you are genuinely blocked by lack of current documentation or external information you cannot infer from the screen. Set false otherwise.
 - "researchQuery" is a precise web search query string when needsResearch is true, otherwise empty string.
@@ -278,6 +284,8 @@ function parseInstruction(
       const obj = JSON.parse(json) as {
         instruction?: string;
         completed_steps?: string[];
+        upcoming_steps?: string[];
+        digression?: boolean;
         done?: boolean;
         needsResearch?: boolean;
         researchQuery?: string;
@@ -288,6 +296,10 @@ function parseInstruction(
         completedSteps: Array.isArray(obj.completed_steps)
           ? obj.completed_steps.map(String)
           : previousSteps,
+        upcomingSteps: Array.isArray(obj.upcoming_steps)
+          ? obj.upcoming_steps.map(String)
+          : [],
+        digression: Boolean(obj.digression),
         done: Boolean(obj.done),
         needsResearch: Boolean(obj.needsResearch),
         researchQuery: (obj.researchQuery ?? "").trim(),
@@ -301,6 +313,8 @@ function parseInstruction(
   return {
     instruction: text || "Continue with the next step.",
     completedSteps: previousSteps,
+    upcomingSteps: [],
+    digression: false,
     done: false,
     needsResearch: false,
     researchQuery: "",
@@ -309,9 +323,12 @@ function parseInstruction(
 }
 
 const CLARIFICATION_SYSTEM_PROMPT: Record<AppMode, string> = {
-  tech_support: `You are a goal clarification assistant. Given the user's task, generate exactly 2-3 short, specific clarifying questions that would help you give better step-by-step guidance. Focus on questions that could meaningfully change the instructions (e.g., which specific tool, which step in the process, what they already have set up). Output JSON only: {"questions": ["...", "...", "..."]}`,
-  training: `You are helping scope a training plan. Given what the user wants to train on, generate exactly 2-3 short, specific questions that pin down who the training is for, what skill or process it should cover, and the desired format or depth. Output JSON only: {"questions": ["...", "...", "..."]}`,
-  teacher: `You are helping a learner set up a study session. Given the subject they want to learn, generate exactly 2-3 short, specific questions that pin down the exact sources they want to learn from (e.g., a particular PDF, paper, book, or site), their current level, and what they want to get out of it. Output JSON only: {"questions": ["...", "...", "..."]}`,
+  tech_support: `You are a goal clarification assistant. Given the user's task, generate exactly 2-3 short, specific clarifying questions that would help you give better step-by-step guidance. For each question, provide 3-4 answer options: the first 2 should be the most common/recommended answers, the rest are reasonable alternatives. Output JSON only:
+{"questions": [{"question": "...", "options": ["recommended 1", "recommended 2", "alternative 1", "alternative 2"]}]}`,
+  training: `You are helping scope a training plan. Given what the user wants to train on, generate exactly 2-3 short, specific questions that pin down who the training is for, what skill or process it covers, and the desired depth. For each question, provide 3-4 answer options: the first 2 should be the most common/recommended answers, the rest are reasonable alternatives. Output JSON only:
+{"questions": [{"question": "...", "options": ["recommended 1", "recommended 2", "alternative 1", "alternative 2"]}]}`,
+  teacher: `You are helping a learner set up a study session. Given the subject they want to learn, generate exactly 2-3 short, specific questions that pin down their current level, what they want to get out of it, and their preferred learning style. For each question, provide 3-4 answer options: the first 2 should be the most common/recommended answers, the rest are reasonable alternatives. Output JSON only:
+{"questions": [{"question": "...", "options": ["recommended 1", "recommended 2", "alternative 1", "alternative 2"]}]}`,
 };
 
 export async function getClarifications(args: {
@@ -325,7 +342,7 @@ export async function getClarifications(args: {
   try {
     const resp = await client.messages.create({
       model: MODEL,
-      max_tokens: 200,
+      max_tokens: 400,
       system: CLARIFICATION_SYSTEM_PROMPT[args.mode],
       messages: [{ role: "user", content: `Task: ${args.goal}` }],
     });
@@ -334,13 +351,74 @@ export async function getClarifications(args: {
     if (json) {
       const obj = JSON.parse(json) as { questions?: unknown };
       if (Array.isArray(obj.questions)) {
-        return { questions: obj.questions.slice(0, 3).map(String) };
+        return {
+          questions: obj.questions.slice(0, 3).map((q: unknown) => {
+            if (typeof q === "object" && q !== null && "question" in q && "options" in q) {
+              const typed = q as { question: string; options: unknown };
+              return {
+                question: String(typed.question),
+                options: Array.isArray(typed.options) ? typed.options.map(String) : [],
+              };
+            }
+            // Fallback for plain string questions (backwards compat)
+            return { question: String(q), options: [] };
+          }),
+        };
       }
     }
   } catch {
     // fail safe — never block session start
   }
   return { questions: [] };
+}
+
+const SESSION_PLAN_SYSTEM_PROMPT: Record<AppMode, string> = {
+  tech_support: `You generate a brief, friendly session plan. Given the user's goal and their answers to clarifying questions, produce a casual spoken overview (under 60 words, first-person "we'll" / "let's") and a list of 3-6 high-level steps. The overview is what the AI will speak aloud — make it warm and natural, like a knowledgeable friend briefing you before you start. Output JSON only: {"overview": "...", "steps": ["...", "...", "..."]}`,
+  training: `You generate a brief, friendly training session plan. Given what the user wants to document, produce a casual spoken overview (under 60 words) and 3-6 high-level steps of how the training capture session will go. Output JSON only: {"overview": "...", "steps": ["...", "...", "..."]}`,
+  teacher: `You generate a brief, friendly learning session plan. Given the subject and the learner's answers, produce a casual spoken overview (under 60 words) and 3-6 high-level concepts or topics you'll cover together. Output JSON only: {"overview": "...", "steps": ["...", "...", "..."]}`,
+};
+
+export async function getSessionPlan(args: {
+  mode: AppMode;
+  goal: string;
+  clarifications: Clarification[];
+}): Promise<SessionPlan> {
+  const apiKey = await getKey("anthropic");
+  if (!apiKey) throw new MissingApiKeyError();
+
+  const client = new Anthropic({ apiKey });
+  const clarText = args.clarifications
+    .filter((c) => c.answer.trim())
+    .map((c) => `Q: ${c.question}\nA: ${c.answer}`)
+    .join("\n");
+
+  try {
+    const resp = await client.messages.create({
+      model: MODEL,
+      max_tokens: 300,
+      system: SESSION_PLAN_SYSTEM_PROMPT[args.mode],
+      messages: [
+        {
+          role: "user",
+          content: `Goal: ${args.goal}${clarText ? `\n\nClarifications:\n${clarText}` : ""}`,
+        },
+      ],
+    });
+    const text = extractText(resp);
+    const json = extractJson(text);
+    if (json) {
+      const obj = JSON.parse(json) as { overview?: string; steps?: unknown };
+      if (obj.overview && Array.isArray(obj.steps)) {
+        return {
+          overview: String(obj.overview).trim(),
+          steps: obj.steps.slice(0, 6).map(String),
+        };
+      }
+    }
+  } catch {
+    // fail safe
+  }
+  return { overview: "", steps: [] };
 }
 
 function extractJson(text: string): string | null {

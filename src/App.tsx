@@ -7,9 +7,8 @@ import { useTts } from "./hooks/useTts";
 import { api } from "./lib/api";
 import { FollowUpInput } from "./components/FollowUpInput";
 import { GoalPrompt } from "./components/GoalPrompt";
-import type { Clarification } from "./components/GoalPrompt";
 import { ModeSelect } from "./components/ModeSelect";
-import type { AppMode, SessionStatus } from "./lib/api";
+import type { AppMode, Clarification, SessionStatus } from "./lib/api";
 import { Instruction } from "./components/Instruction";
 import { PrivacyNotice } from "./components/PrivacyNotice";
 import { Settings as SettingsView } from "./components/Settings";
@@ -17,7 +16,7 @@ import { CompletedSteps } from "./components/CompletedSteps";
 import { ConversationHistory } from "./components/ConversationHistory";
 import { useTheme } from "./design/ThemeProvider";
 import { Glow, Logo, Spinner, CtrlBtn } from "./design/primitives";
-import { IList, IMic, IPause, ISpark, IGear, IExpand } from "./design/icons";
+import { IMic, IPause, IGear, IExpand } from "./design/icons";
 import { ar, lt } from "./design/theme";
 
 type View = "panel" | "settings" | "privacy";
@@ -62,6 +61,7 @@ export default function App() {
   const goal           = useSession((s) => s.goal);
   const instruction    = useSession((s) => s.currentInstruction);
   const completedSteps = useSession((s) => s.completedSteps);
+  const upcomingSteps  = useSession((s) => s.upcomingSteps);
   const frames         = useSession((s) => s.frames);
   const error          = useSession((s) => s.lastError);
   const done           = useSession((s) => s.done);
@@ -80,11 +80,10 @@ export default function App() {
   const loadSettings  = useSettings((s) => s.load);
   const patchSettings = useSettings((s) => s.patch);
 
-  const [view, setView]                 = useState<View>("panel");
-  const [focused, setFocused]           = useState(false);
-  const [showPeek, setShowPeek]         = useState(false);
-  const [showSteps, setShowSteps]       = useState(false);
-  const [showFollowUp, setShowFollowUp] = useState(false);
+  const [view, setView]                   = useState<View>("panel");
+  const [focused, setFocused]             = useState(false);
+  const [showPeek, setShowPeek]           = useState(false);
+  const [showStopConfirm, setShowStopConfirm] = useState(false);
 
   const rateLimitCountdown = useRateLimitCountdown();
   const { cancel: cancelTts } = useTts();
@@ -127,7 +126,7 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [showPeek]);
 
-  function startSession(g: string, clarifications: Clarification[] = []) {
+  function startSession(g: string, clarifications: Clarification[] = [], planSteps: string[] = []) {
     if (!keyStatus.anthropic) { setView("settings"); return; }
     const ctx = clarifications
       .filter((c) => c.answer.trim())
@@ -137,6 +136,7 @@ export default function App() {
     reset();
     if (activeMode) setMode(activeMode);
     if (ctx) useSession.getState().setClarificationContext(ctx);
+    if (planSteps.length > 0) useSession.getState().setUpcomingSteps(planSteps);
     setGoal(g);
     appendTurn({ role: "user", content: `Goal: ${g}`, timestamp: Date.now() });
     setStatus("watching");
@@ -158,8 +158,7 @@ export default function App() {
     cancelTts();
     reset();
     setShowPeek(false);
-    setShowSteps(false);
-    setShowFollowUp(false);
+    setShowStopConfirm(false);
   }
 
   function submitFollowUp(text: string) {
@@ -251,7 +250,7 @@ export default function App() {
         {!mode ? (
           <ModeSelect onSelect={setMode} onSettings={openSettings} />
         ) : !goal ? (
-          <GoalPrompt mode={mode} onStart={startSession} onBack={() => setMode(null)} />
+          <GoalPrompt mode={mode} onStart={startSession} onBack={() => { reset(); }} />
         ) : (
           <>
             <div className="flex flex-col gap-0.5">
@@ -272,45 +271,46 @@ export default function App() {
               error={error}
               researchQuery={researchQuery}
             />
-            {showSteps && (
-              <CompletedSteps
-                steps={completedSteps}
-                noun={MODE_META[mode].stepNoun}
-              />
-            )}
+            <CompletedSteps
+              completedSteps={completedSteps}
+              currentInstruction={instruction}
+              upcomingSteps={upcomingSteps}
+              noun={MODE_META[mode].stepNoun}
+            />
             <ConversationHistory turns={conversation} />
-            {showFollowUp && (
-              <FollowUpInput
-                isThinking={status === "thinking"}
-                mode={mode}
-                onSubmit={submitFollowUp}
-              />
-            )}
+            <FollowUpInput
+              isThinking={status === "thinking"}
+              mode={mode}
+              onSubmit={submitFollowUp}
+            />
           </>
         )}
       </div>
 
-      {/* Control bar — replaces D-pad, preserves all 7 actions */}
+      {/* Control bar */}
       {goal && (
-        <ControlBar
-          status={status}
-          ttsEnabled={settings?.ttsEnabled ?? false}
-          stepsCount={completedSteps.length}
-          showSteps={showSteps}
-          showFollowUp={showFollowUp}
-          hasPeek={Boolean(lastFrame)}
-          showPeek={showPeek}
-          attachedCount={attachedFileNames.length}
-          rateLimitCountdown={rateLimitCountdown}
-          onPause={pause}
-          onResume={resume}
-          onStop={stop}
-          onToggleSteps={() => setShowSteps((v) => !v)}
-          onToggleFollowUp={() => setShowFollowUp((v) => !v)}
-          onToggleVoice={toggleVoice}
-          onAttach={attachContext}
-          onPeek={() => setShowPeek((v) => !v)}
-        />
+        <>
+          {showStopConfirm && (
+            <StopConfirmBanner
+              onConfirm={stop}
+              onCancel={() => setShowStopConfirm(false)}
+            />
+          )}
+          <ControlBar
+            status={status}
+            ttsEnabled={settings?.ttsEnabled ?? false}
+            hasPeek={Boolean(lastFrame)}
+            showPeek={showPeek}
+            attachedCount={attachedFileNames.length}
+            rateLimitCountdown={rateLimitCountdown}
+            onPause={pause}
+            onResume={resume}
+            onStop={() => setShowStopConfirm(true)}
+            onToggleVoice={toggleVoice}
+            onAttach={attachContext}
+            onPeek={() => setShowPeek((v) => !v)}
+          />
+        </>
       )}
     </PanelShell>
   );
@@ -434,9 +434,6 @@ function PanelHeader({
 function ControlBar({
   status,
   ttsEnabled,
-  stepsCount,
-  showSteps,
-  showFollowUp,
   hasPeek,
   showPeek,
   attachedCount,
@@ -444,17 +441,12 @@ function ControlBar({
   onPause,
   onResume,
   onStop,
-  onToggleSteps,
-  onToggleFollowUp,
   onToggleVoice,
   onAttach,
   onPeek,
 }: {
   status: SessionStatus;
   ttsEnabled: boolean;
-  stepsCount: number;
-  showSteps: boolean;
-  showFollowUp: boolean;
   hasPeek: boolean;
   showPeek: boolean;
   attachedCount: number;
@@ -462,8 +454,6 @@ function ControlBar({
   onPause(): void;
   onResume(): void;
   onStop(): void;
-  onToggleSteps(): void;
-  onToggleFollowUp(): void;
   onToggleVoice(): void;
   onAttach(): void;
   onPeek(): void;
@@ -481,32 +471,6 @@ function ControlBar({
         flexShrink: 0,
       }}
     >
-      {/* Left group: content toggles */}
-      <CtrlBtn title="Completed steps" onClick={onToggleSteps} color={showSteps ? T.accent : undefined}>
-        <div style={{ position: "relative" }}>
-          <IList c={showSteps ? T.accent : "currentColor"} />
-          {stepsCount > 0 && (
-            <span style={{
-              position: "absolute", top: -5, right: -7,
-              width: 13, height: 13, borderRadius: "50%",
-              background: T.accent, color: T.onAccent,
-              fontSize: 8, fontWeight: 700,
-              display: "grid", placeItems: "center",
-            }}>
-              {stepsCount > 9 ? "9+" : stepsCount}
-            </span>
-          )}
-        </div>
-      </CtrlBtn>
-
-      <CtrlBtn
-        title="Ask a follow-up"
-        onClick={onToggleFollowUp}
-        color={showFollowUp ? T.accent : undefined}
-      >
-        <ISpark c={showFollowUp ? T.accent : "currentColor"} />
-      </CtrlBtn>
-
       <CtrlBtn
         title={ttsEnabled ? "Voice on — click to mute" : "Voice off — click to enable"}
         onClick={onToggleVoice}
@@ -580,6 +544,50 @@ function ControlBar({
       <CtrlBtn title="Stop session" onClick={onStop} color="#ef4444">
         <StopIcon />
       </CtrlBtn>
+    </div>
+  );
+}
+
+/* ── Stop confirmation banner ── */
+
+function StopConfirmBanner({ onConfirm, onCancel }: { onConfirm(): void; onCancel(): void }) {
+  const T = useTheme();
+  return (
+    <div
+      className="no-drag"
+      style={{
+        display: "flex", alignItems: "center", gap: 10,
+        padding: "10px 14px",
+        borderTop: `1px solid ${lt(0.07)}`,
+        background: "rgba(239,68,68,0.07)",
+        flexShrink: 0,
+      }}
+    >
+      <span style={{ fontSize: 12, color: T.ink2, flex: 1 }}>
+        End session? Your progress will be cleared.
+      </span>
+      <button
+        type="button"
+        onClick={onCancel}
+        style={{
+          borderRadius: 8, border: `1px solid ${lt(0.12)}`,
+          background: "transparent", color: T.ink2,
+          fontSize: 11, padding: "5px 12px", cursor: "pointer",
+        }}
+      >
+        Cancel
+      </button>
+      <button
+        type="button"
+        onClick={onConfirm}
+        style={{
+          borderRadius: 8, border: 0,
+          background: "#ef4444", color: "#fff",
+          fontSize: 11, fontWeight: 600, padding: "5px 12px", cursor: "pointer",
+        }}
+      >
+        End session
+      </button>
     </div>
   );
 }

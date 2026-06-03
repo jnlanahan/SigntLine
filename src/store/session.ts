@@ -13,6 +13,8 @@ export interface SessionState {
   goal: string | null;
   currentInstruction: string;
   completedSteps: string[];
+  upcomingSteps: string[];
+  diverted: boolean;
   conversation: ConversationTurn[];
   frames: CaptureFrame[];
   lastError: string | null;
@@ -45,6 +47,8 @@ export interface SessionState {
   setGoal(goal: string): void;
   setInstruction(text: string): void;
   setCompletedSteps(steps: string[]): void;
+  setUpcomingSteps(steps: string[]): void;
+  setDiverted(val: boolean): void;
   pushFrame(frame: CaptureFrame): void;
   appendTurn(turn: ConversationTurn): void;
   setError(message: string | null): void;
@@ -74,6 +78,8 @@ const initial = {
   goal: null,
   currentInstruction: "",
   completedSteps: [] as string[],
+  upcomingSteps: [] as string[],
+  diverted: false,
   conversation: [] as ConversationTurn[],
   frames: [] as CaptureFrame[],
   lastError: null,
@@ -101,6 +107,8 @@ export const useSession = create<SessionState>((set) => ({
   setGoal: (goal) => set({ goal }),
   setInstruction: (text) => set({ currentInstruction: text }),
   setCompletedSteps: (steps) => set({ completedSteps: steps }),
+  setUpcomingSteps: (steps) => set({ upcomingSteps: steps }),
+  setDiverted: (val) => set({ diverted: val }),
   pushFrame: (frame) =>
     set((state) => ({
       frames: [...state.frames, frame].slice(-MAX_FRAMES),
