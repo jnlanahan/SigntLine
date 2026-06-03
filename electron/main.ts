@@ -329,14 +329,15 @@ function normalizeRegion(
 
 function createWindow() {
   const settings = loadSettings();
+  const saved = settings.windowBounds;
 
   mainWindow = new BrowserWindow({
-    width: 380,
-    height: 520,
+    width:  saved?.width  ?? 380,
+    height: saved?.height ?? 520,
+    x:      saved?.x,
+    y:      saved?.y,
     minWidth: 320,
     minHeight: 380,
-    x: undefined,
-    y: undefined,
     frame: false,
     transparent: true,
     backgroundColor: "#00000000",
@@ -356,6 +357,15 @@ function createWindow() {
   mainWindow.setAlwaysOnTop(true, "floating");
   mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   mainWindow.setOpacity(settings.opacity);
+
+  // Save position/size whenever the user moves or resizes the window
+  const saveBounds = () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      saveSettings({ windowBounds: mainWindow.getBounds() });
+    }
+  };
+  mainWindow.on("moved", saveBounds);
+  mainWindow.on("resized", saveBounds);
 
   if (isDev) {
     void mainWindow.loadURL(DEV_URL);
@@ -382,6 +392,7 @@ app.whenReady().then(async () => {
   // The capture-region glow is always visible while the app is running so the
   // user can see exactly what's being captured at any time.
   showGlowOverlay(loadSettings().selectedDisplayId);
+  setGlowAdjust(false); // safety: ensure overlay is never stuck in interactive mode from a prior session
 
   // Global input listener — debounced so rapid typing/clicking doesn't spam ticks
   function scheduleInputTick() {

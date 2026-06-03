@@ -328,17 +328,21 @@ function PanelShell({ children }: { children: React.ReactNode }) {
         height: "100vh",
         borderRadius: 22,
         overflow: "hidden",
-        background: `${T.glassGrad}, ${T.glassBg}`,
-        backdropFilter: "blur(26px) saturate(1.35)",
-        WebkitBackdropFilter: "blur(26px) saturate(1.35)",
-        border: `1px solid ${T.border}`,
-        boxShadow: `0 1px 0 0 ${T.hi} inset, 0 30px 70px -20px rgba(0,0,0,0.7), 0 0 0 1px rgba(0,0,0,0.3)`,
+        // backdropFilter must NOT be on this element — it breaks -webkit-app-region: drag on Windows/Chromium
         fontFamily: T.font,
         color: T.ink,
-        display: "flex",
-        flexDirection: "column",
       }}
     >
+      {/* Glass layer — absolutely positioned behind content so the outer container stays drag-compatible */}
+      <div aria-hidden style={{
+        position: "absolute", inset: 0, pointerEvents: "none",
+        backdropFilter: "blur(26px) saturate(1.35)",
+        WebkitBackdropFilter: "blur(26px) saturate(1.35)",
+        background: `${T.glassGrad}, ${T.glassBg}`,
+        border: `1px solid ${T.border}`,
+        boxShadow: `0 1px 0 0 ${T.hi} inset, 0 30px 70px -20px rgba(0,0,0,0.7), 0 0 0 1px rgba(0,0,0,0.3)`,
+        borderRadius: 22,
+      }} />
       <Glow />
       <div style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", height: "100%" }}>
         {children}

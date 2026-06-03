@@ -66,7 +66,12 @@
       "Bash(Start-Process -FilePath \"node_modules\\\\.bin\\\\electron.cmd\" -ArgumentList \".\" -PassThru)",
       "Bash(Select-Object Id)",
       "PowerShell(cd \"s:/Vibe Coding Folder/SigntLine\"; $proc = Start-Process -FilePath \"node_modules\\\\.bin\\\\electron.cmd\" -ArgumentList \".\" -PassThru; Write-Output \"PID: $\\($proc.Id\\)\"; Start-Sleep -Seconds 4; Write-Output \"App launched\")",
-      "Bash(Read \"C:\\\\Users\\\\jnlan\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\s--Vibe-Coding-Folder-SigntLine\\\\73938271-4b7b-431f-a823-42cb7c0bfaaf\\\\tasks\\\\bvlhw1u2d.output\")"
+      "Bash(Read \"C:\\\\Users\\\\jnlan\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\s--Vibe-Coding-Folder-SigntLine\\\\73938271-4b7b-431f-a823-42cb7c0bfaaf\\\\tasks\\\\bvlhw1u2d.output\")",
+      "PowerShell(Get-NetTCPConnection -LocalPort 5173 -ErrorAction SilentlyContinue | Select-Object -First 5 OwningProcess; Get-Process -Id \\(Get-NetTCPConnection -LocalPort 5173 -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess\\) -ErrorAction SilentlyContinue | Select-Object Id, ProcessName, MainWindowTitle)",
+      "PowerShell(Get-Process -Id 36772 -ErrorAction SilentlyContinue)",
+      "PowerShell(Get-Process -Name \"node\",\"electron\" -ErrorAction SilentlyContinue)",
+      "PowerShell(Get-Content \"$env:APPDATA\\\\SightLine\\\\settings.json\" -ErrorAction SilentlyContinue)",
+      "PowerShell(Stop-Process -Name \"electron\" -Force -ErrorAction SilentlyContinue)"
     ]
   }
 }

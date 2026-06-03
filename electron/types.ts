@@ -86,6 +86,13 @@ export type TtsVoiceId =
 
 export type AccentName = "lime" | "cobalt" | "rose" | "slate";
 
+export interface WindowBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface Settings {
   captureIntervalSec: number;
   opacity: number;
@@ -95,6 +102,7 @@ export interface Settings {
   ttsEnabled: boolean;
   ttsVoice: TtsVoiceId;
   accentColor: AccentName;
+  windowBounds: WindowBounds | null;
 }
 
 export interface DisplayInfo {

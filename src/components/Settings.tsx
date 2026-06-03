@@ -201,6 +201,9 @@ export function Settings({ onClose }: Props) {
                   : "full display"}
               </span>
             </div>
+            <p style={{ fontSize: 10, color: T.ink3, margin: 0, lineHeight: 1.5 }}>
+              Click <strong>Adjust</strong> → drag the purple box handles → click <strong>Done</strong> to set a capture zone.
+            </p>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <button
                 type="button"
@@ -215,7 +218,7 @@ export function Settings({ onClose }: Props) {
                   onClick={() => void patch({ captureRegion: null })}
                   style={ghostBtnStyle}
                 >
-                  Reset
+                  Reset to full display
                 </button>
               )}
             </div>

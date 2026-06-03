@@ -12,6 +12,7 @@ const DEFAULTS: Settings = {
   ttsEnabled: false,
   ttsVoice: "nova",
   accentColor: "lime",
+  windowBounds: null,
 };
 
 function settingsPath(): string {
