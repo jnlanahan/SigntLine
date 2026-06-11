@@ -16,7 +16,7 @@ import { CompletedSteps } from "./components/CompletedSteps";
 import { ConversationHistory } from "./components/ConversationHistory";
 import { useTheme } from "./design/ThemeProvider";
 import { Glow, Logo, Spinner, CtrlBtn } from "./design/primitives";
-import { IMic, IPause, IGear, IExpand } from "./design/icons";
+import { IMic, IPause, IGear, IExpand, IMonitor } from "./design/icons";
 import { ar, lt } from "./design/theme";
 
 type View = "panel" | "settings" | "privacy";
@@ -42,6 +42,7 @@ const STATUS_TEXT: Record<SessionStatus, string> = {
   error:       "Error",
   clarifying:  "Setting up…",
   researching: "Researching…",
+  evaluating:  "Checking work…",
 };
 
 const STATUS_DOT: Record<SessionStatus, string> = {
@@ -53,6 +54,7 @@ const STATUS_DOT: Record<SessionStatus, string> = {
   error:       "#ef4444",
   clarifying:  "#f59e0b",
   researching: "#f59e0b",
+  evaluating:  "#f59e0b",
 };
 
 export default function App() {
@@ -84,6 +86,7 @@ export default function App() {
   const [focused, setFocused]             = useState(false);
   const [showPeek, setShowPeek]           = useState(false);
   const [showStopConfirm, setShowStopConfirm] = useState(false);
+  const [evalResult, setEvalResult]       = useState<{ achieved: boolean; verdict: string } | null>(null);
 
   const rateLimitCountdown = useRateLimitCountdown();
   const { cancel: cancelTts } = useTts();
@@ -159,6 +162,27 @@ export default function App() {
     reset();
     setShowPeek(false);
     setShowStopConfirm(false);
+    setEvalResult(null);
+  }
+
+  async function markDone() {
+    if (!goal || !mode) return;
+    cancelTts();
+    setEvalResult(null);
+    setStatus("evaluating");
+    const result = await api().claude.evaluateGoal({
+      mode,
+      goal,
+      completedSteps,
+      conversation,
+      frames,
+    });
+    if ("__error" in result) {
+      setStatus("watching");
+      return;
+    }
+    setEvalResult(result);
+    setStatus("waiting");
   }
 
   function submitFollowUp(text: string) {
@@ -245,14 +269,20 @@ export default function App() {
         </div>
       )}
 
-      {/* Scrollable content */}
-      <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto p-3 pt-2 sl-scroll">
-        {!mode ? (
-          <ModeSelect onSelect={setMode} onSettings={openSettings} />
-        ) : !goal ? (
-          <GoalPrompt mode={mode} onStart={startSession} onBack={() => { reset(); }} />
-        ) : (
-          <>
+      {/* Content area */}
+      {(!mode || !goal) ? (
+        <div className="flex flex-1 flex-col gap-2.5 overflow-y-auto p-3 pt-2 sl-scroll">
+          {!mode ? (
+            <ModeSelect onSelect={setMode} onSettings={openSettings} />
+          ) : (
+            <GoalPrompt mode={mode} onStart={startSession} onBack={() => { reset(); }} />
+          )}
+        </div>
+      ) : (
+        /* Session layout: sticky top info + scrollable chat + pinned input */
+        <div className="flex flex-1 flex-col" style={{ minHeight: 0 }}>
+          {/* Sticky top section — always visible */}
+          <div className="flex flex-col gap-2.5 px-3 pt-2 pb-1" style={{ flexShrink: 0 }}>
             <div className="flex flex-col gap-0.5">
               <p className="font-mono text-[9px] uppercase tracking-widest text-sl-ink3">
                 {MODE_META[mode].goalLabel}
@@ -277,15 +307,26 @@ export default function App() {
               upcomingSteps={upcomingSteps}
               noun={MODE_META[mode].stepNoun}
             />
+            {evalResult && (
+              <EvalResultCard achieved={evalResult.achieved} verdict={evalResult.verdict} />
+            )}
+          </div>
+
+          {/* Scrollable conversation */}
+          <div className="flex-1 overflow-y-auto sl-scroll px-3 pb-1" style={{ minHeight: 0 }}>
             <ConversationHistory turns={conversation} />
+          </div>
+
+          {/* Pinned follow-up input */}
+          <div className="px-3 pb-2 pt-1" style={{ flexShrink: 0 }}>
             <FollowUpInput
-              isThinking={status === "thinking"}
+              isThinking={status === "thinking" || status === "evaluating"}
               mode={mode}
               onSubmit={submitFollowUp}
             />
-          </>
-        )}
-      </div>
+          </div>
+        </div>
+      )}
 
       {/* Control bar */}
       {goal && (
@@ -309,6 +350,7 @@ export default function App() {
             onToggleVoice={toggleVoice}
             onAttach={attachContext}
             onPeek={() => setShowPeek((v) => !v)}
+            onMarkDone={() => void markDone()}
           />
         </>
       )}
@@ -320,6 +362,7 @@ export default function App() {
 
 function PanelShell({ children }: { children: React.ReactNode }) {
   const T = useTheme();
+  const solidBg = useSettings((s) => s.settings?.solidBackground ?? false);
   return (
     <div
       style={{
@@ -333,12 +376,16 @@ function PanelShell({ children }: { children: React.ReactNode }) {
         color: T.ink,
       }}
     >
-      {/* Glass layer — absolutely positioned behind content so the outer container stays drag-compatible */}
+      {/* Background layer — glass or solid depending on setting */}
       <div aria-hidden style={{
         position: "absolute", inset: 0, pointerEvents: "none",
-        backdropFilter: "blur(26px) saturate(1.35)",
-        WebkitBackdropFilter: "blur(26px) saturate(1.35)",
-        background: `${T.glassGrad}, ${T.glassBg}`,
+        ...(solidBg ? {
+          background: "rgba(13, 14, 18, 0.97)",
+        } : {
+          backdropFilter: "blur(26px) saturate(1.35)",
+          WebkitBackdropFilter: "blur(26px) saturate(1.35)",
+          background: `${T.glassGrad}, ${T.glassBg}`,
+        }),
         border: `1px solid ${T.border}`,
         boxShadow: `0 1px 0 0 ${T.hi} inset, 0 30px 70px -20px rgba(0,0,0,0.7), 0 0 0 1px rgba(0,0,0,0.3)`,
         borderRadius: 22,
@@ -346,6 +393,31 @@ function PanelShell({ children }: { children: React.ReactNode }) {
       <Glow />
       <div style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", height: "100%" }}>
         {children}
+      </div>
+    </div>
+  );
+}
+
+/* ── Evaluation result card ── */
+
+function EvalResultCard({ achieved, verdict }: { achieved: boolean; verdict: string }) {
+  const T = useTheme();
+  return (
+    <div style={{
+      borderRadius: 11,
+      padding: "10px 14px",
+      background: achieved ? "rgba(143,203,102,0.08)" : "rgba(239,68,68,0.07)",
+      border: `1px solid ${achieved ? "rgba(143,203,102,0.25)" : "rgba(239,68,68,0.25)"}`,
+      display: "flex", gap: 10, alignItems: "flex-start",
+    }}>
+      <span style={{ fontSize: 16, flexShrink: 0, marginTop: 1 }}>
+        {achieved ? "✓" : "✗"}
+      </span>
+      <div>
+        <p style={{ margin: "0 0 3px", fontSize: 11, fontWeight: 700, color: achieved ? "#8FCB66" : "#ef4444", letterSpacing: "0.04em", textTransform: "uppercase" }}>
+          {achieved ? "Goal achieved" : "Not quite done"}
+        </p>
+        <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: T.ink2 }}>{verdict}</p>
       </div>
     </div>
   );
@@ -375,6 +447,12 @@ function PanelHeader({
   const T = useTheme();
   const dotColor = STATUS_DOT[status];
   const pulses   = status === "watching" || status === "thinking";
+  const patchSettings = useSettings((s) => s.patch);
+  const selectedDisplayId = useSettings((s) => s.settings?.selectedDisplayId ?? null);
+  const [displays, setDisplays] = useState<{ id: string; label: string; primary: boolean }[]>([]);
+  useEffect(() => {
+    void api().displays.list().then(setDisplays);
+  }, []);
 
   return (
     <div
@@ -422,6 +500,19 @@ function PanelHeader({
         <CtrlBtn title="Adjust capture area" onClick={onAdjustCapture}>
           <CropIcon />
         </CtrlBtn>
+        {displays.length > 1 && (
+          <CtrlBtn
+            title={`Watching: ${displays.find((d) => d.id === selectedDisplayId)?.label ?? "Primary"} — click to switch`}
+            onClick={() => {
+              const ids = displays.map((d) => d.id);
+              const idx = selectedDisplayId ? ids.indexOf(selectedDisplayId) : -1;
+              const next = displays[(idx + 1) % displays.length];
+              void patchSettings({ selectedDisplayId: next.id });
+            }}
+          >
+            <IMonitor />
+          </CtrlBtn>
+        )}
         <CtrlBtn title="Settings" onClick={onOpenSettings}>
           <IGear />
         </CtrlBtn>
@@ -448,6 +539,7 @@ function ControlBar({
   onToggleVoice,
   onAttach,
   onPeek,
+  onMarkDone,
 }: {
   status: SessionStatus;
   ttsEnabled: boolean;
@@ -461,6 +553,7 @@ function ControlBar({
   onToggleVoice(): void;
   onAttach(): void;
   onPeek(): void;
+  onMarkDone(): void;
 }) {
   const T   = useTheme();
   const isPaused = status === "paused";
@@ -543,6 +636,24 @@ function ControlBar({
         }} />
         AI LIVE
       </span>
+
+      {/* "I'm done — check my work" */}
+      {(status === "watching" || status === "waiting") && (
+        <button
+          className="no-drag"
+          onClick={onMarkDone}
+          title="I'm done — let the AI check my work"
+          style={{
+            height: 30, border: `1px solid ${lt(0.12)}`,
+            borderRadius: 9, cursor: "pointer",
+            background: "transparent", color: T.ink2,
+            fontSize: 10.5, fontWeight: 600, padding: "0 10px",
+            letterSpacing: "0.02em", flexShrink: 0,
+          }}
+        >
+          Done ✓
+        </button>
+      )}
 
       {/* Stop */}
       <CtrlBtn title="Stop session" onClick={onStop} color="#ef4444">

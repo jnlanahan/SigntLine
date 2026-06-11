@@ -39,15 +39,17 @@ export async function speakTextGoogle(
 
   const voiceName = (voice && VOICE_MAP[voice]) ? VOICE_MAP[voice] : "en-US-Studio-O";
 
-  // Wrap in SSML so the Studio voice adds natural micro-pauses after sentences.
-  const ssml = `<speak>${text.replace(/([.!?])\s+/g, "$1<break time=\"180ms\"/> ")}</speak>`;
+  // Wrap in SSML so the Studio voice adds natural pauses after sentences and commas.
+  const ssml = `<speak>${text
+    .replace(/([.!?])\s+/g, '$1<break time="250ms"/> ')
+    .replace(/,\s+/g, ',<break time="100ms"/> ')}</speak>`;
 
   const [response] = await client.synthesizeSpeech({
     input: { ssml },
     voice: { languageCode: "en-US", name: voiceName },
     audioConfig: {
       audioEncoding: "MP3" as const,
-      speakingRate: 1.08,
+      speakingRate: 1.0,
       volumeGainDb: 2.0,
     },
   });

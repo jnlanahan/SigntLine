@@ -14,6 +14,7 @@ const LABELS: Record<SessionStatus, string> = {
   error: "Error",
   clarifying: "Setting up",
   researching: "Researching",
+  evaluating: "Checking",
 };
 
 const COLORS: Record<SessionStatus, string> = {
@@ -25,6 +26,7 @@ const COLORS: Record<SessionStatus, string> = {
   error: "bg-error",
   clarifying: "bg-thinking",
   researching: "bg-thinking",
+  evaluating: "bg-thinking",
 };
 
 export function StatusIndicator({ status, rateLimitCountdown }: Props) {

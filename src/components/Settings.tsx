@@ -282,6 +282,17 @@ export function Settings({ onClose }: Props) {
               How visible the panel stays while you work in other apps
             </span>
           </div>
+
+          {/* Solid background */}
+          <ToggleRow
+            T={T}
+            label="Solid background"
+            hint="Removes the glass/blur effect for better readability"
+            checked={settings.solidBackground ?? false}
+            onChange={(v) => patch({ solidBackground: v })}
+            accentRGB={T.accentRGB}
+            accent={T.accent}
+          />
         </div>
 
         {/* Window */}

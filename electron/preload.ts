@@ -8,6 +8,7 @@ import type {
   ClarificationResponse,
   ConversationTurn,
   DisplayInfo,
+  GoalEvaluation,
   InstructionResponse,
   SessionPlan,
   Settings,
@@ -60,6 +61,13 @@ export interface SightLineApi {
       clarifications: Clarification[];
     }): Promise<SessionPlan | { __error: string; message?: string }>;
     onInstructionReady(cb: (text: string) => void): () => void;
+    evaluateGoal(args: {
+      mode: AppMode;
+      goal: string;
+      completedSteps: string[];
+      conversation: ConversationTurn[];
+      frames: CaptureFrame[];
+    }): Promise<GoalEvaluation | { __error: string; message?: string }>;
   };
   whisper: {
     transcribe(args: {
@@ -131,6 +139,7 @@ const api: SightLineApi = {
       ipcRenderer.on("claude:instruction-ready", handler);
       return () => ipcRenderer.removeListener("claude:instruction-ready", handler);
     },
+    evaluateGoal: (args) => ipcRenderer.invoke("claude:evaluate-goal", args),
   },
   whisper: {
     transcribe: (args) => ipcRenderer.invoke("whisper:transcribe", args),

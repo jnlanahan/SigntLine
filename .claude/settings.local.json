@@ -71,7 +71,16 @@
       "PowerShell(Get-Process -Id 36772 -ErrorAction SilentlyContinue)",
       "PowerShell(Get-Process -Name \"node\",\"electron\" -ErrorAction SilentlyContinue)",
       "PowerShell(Get-Content \"$env:APPDATA\\\\SightLine\\\\settings.json\" -ErrorAction SilentlyContinue)",
-      "PowerShell(Stop-Process -Name \"electron\" -Force -ErrorAction SilentlyContinue)"
+      "PowerShell(Stop-Process -Name \"electron\" -Force -ErrorAction SilentlyContinue)",
+      "Bash(npm test *)",
+      "PowerShell(Get-Process | Where-Object { $_.Name -match \"electron|node\" } | Select-Object Id, Name, MainWindowTitle | Format-Table -AutoSize)",
+      "PowerShell(Stop-Process -Id 43828 -Force)",
+      "Bash(netstat -ano)",
+      "Bash(findstr :5173)",
+      "PowerShell(Get-Process -Id 47260, 16888 -ErrorAction SilentlyContinue)",
+      "PowerShell(Stop-Process -Id 47260 -Force -ErrorAction SilentlyContinue)",
+      "PowerShell(Stop-Process -Id 16888 -Force -ErrorAction SilentlyContinue)",
+      "Bash(echo \"started, PID=$!\")"
     ]
   }
 }

@@ -7,17 +7,19 @@ import {
   useTts,
   randomWaitingPhrase,
   randomCompletionPhrase,
+  waitForSpeechEnd,
+  isSpeaking,
 } from "./useTts";
+import { useQuietPeriod } from "./useQuietPeriod";
 import type { AppMode } from "../lib/api";
 
 const RETRY_DELAY_MS = 10_000;
 
 // Timing constants that only apply in tech_support mode.
-const TS_POST_INSTRUCTION_COOLDOWN_MS = 2000;
-const TS_WAITING_NUDGE_DELAY_MS = 15_000;
-const TS_NUDGE_REPEAT_INTERVAL_MS = 30_000;
-const TS_ALERT_INTERVAL_MS = 2_000;
-const TS_ALERT_WINDOW_MS = 20_000;
+const TS_POST_INSTRUCTION_COOLDOWN_MS = 5000;
+const TS_WAITING_NUDGE_DELAY_MS = 30_000;
+const TS_NUDGE_REPEAT_INTERVAL_MS = 60_000;
+const TS_QUIET_PERIOD_MS = 3_500; // silence before triggering a check
 const TS_IDLE_INTERVAL_MS = 30_000;
 const TS_IDLE_TICK_THRESHOLD = 3;
 
@@ -27,60 +29,51 @@ const TRAIN_NORMAL_INTERVAL_MS = 60_000;
 const TRAIN_IDLE_INTERVAL_MS = 90_000;
 
 type ModeConfig = {
-  // If > 0, enable a rapid-fire alert window after each instruction.
-  alertWindowMs: number;
-  alertIntervalMs: number;
   // How long to wait before the first re-poll after an instruction.
   postCooldownMs: number;
-  // Auto-poll interval during normal operation (ms). 0 = no auto-poll.
+  // Fallback auto-poll interval (ms). 0 = no auto-poll (teacher mode).
   normalIntervalMs: number;
   idleIntervalMs: number;
   idleTickThreshold: number;
   // Whether to play "I'm still watching" nudges.
   nudgeEnabled: boolean;
-  // Whether mouse/keyboard activity triggers an immediate tick.
-  inputTriggeredEnabled: boolean;
+  // ms of silence after last input before triggering a check. 0 = disabled.
+  quietPeriodMs: number;
   // If true, skip the tick unless screen changed or there's a pending follow-up.
   // If false (teacher), ONLY fire when there's a pending follow-up.
   requireScreenChange: boolean;
 };
 
-function getModeConfig(mode: AppMode | null, captureIntervalSec: number): ModeConfig {
+function getModeConfig(mode: AppMode | null, _captureIntervalSec: number): ModeConfig {
   switch (mode) {
     case "training":
       return {
-        alertWindowMs: 0,
-        alertIntervalMs: 0,
         postCooldownMs: TRAIN_POST_INSTRUCTION_COOLDOWN_MS,
         normalIntervalMs: TRAIN_NORMAL_INTERVAL_MS,
         idleIntervalMs: TRAIN_IDLE_INTERVAL_MS,
         idleTickThreshold: 999, // effectively disable idle tier
         nudgeEnabled: false,
-        inputTriggeredEnabled: false,
+        quietPeriodMs: 0, // no input trigger in training
         requireScreenChange: true,
       };
     case "teacher":
       return {
-        alertWindowMs: 0,
-        alertIntervalMs: 0,
         postCooldownMs: 2000,
         normalIntervalMs: 0, // no auto-poll — conversation-driven only
         idleIntervalMs: 0,
         idleTickThreshold: 999,
         nudgeEnabled: false,
-        inputTriggeredEnabled: false,
-        requireScreenChange: false, // only fire on pendingFollowUp
+        quietPeriodMs: 0, // conversation-driven, not input-triggered
+        requireScreenChange: false,
       };
     default: // tech_support
       return {
-        alertWindowMs: TS_ALERT_WINDOW_MS,
-        alertIntervalMs: TS_ALERT_INTERVAL_MS,
         postCooldownMs: TS_POST_INSTRUCTION_COOLDOWN_MS,
-        normalIntervalMs: Math.max(2, captureIntervalSec) * 1000,
+        normalIntervalMs: 30_000, // fallback — quiet period handles responsive triggering
         idleIntervalMs: TS_IDLE_INTERVAL_MS,
         idleTickThreshold: TS_IDLE_TICK_THRESHOLD,
         nudgeEnabled: true,
-        inputTriggeredEnabled: true,
+        quietPeriodMs: TS_QUIET_PERIOD_MS,
         requireScreenChange: true,
       };
   }
@@ -276,13 +269,6 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
         useSession.getState().setLastSpokenInstruction(result.instruction);
         useSession.getState().setLastInstructionAt(Date.now());
 
-        // Alert window only in tech_support — other modes don't want rapid
-        // re-polling right after Claude speaks.
-        if (cfg.alertWindowMs > 0) {
-          useSession.getState().setAfterInstructionAlertUntil(
-            Date.now() + cfg.alertWindowMs,
-          );
-        }
         useSession.getState().resetIdleCycles();
 
         const ttsEnabled = useSettings.getState().settings?.ttsEnabled;
@@ -350,10 +336,13 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
 
       await tickRef.current();
 
+      // Wait for any TTS audio to finish before scheduling the next tick.
+      // Prevents the next instruction from firing while the current one is still speaking.
+      await waitForSpeechEnd();
+
       if (cancelled) return;
 
       const s = useSession.getState();
-      const now = Date.now();
       const cfg = getModeConfig(
         s.mode,
         useSettings.getState().settings?.captureIntervalSec ?? 15,
@@ -363,18 +352,10 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
       // when a follow-up is submitted (see the pendingFollowUp watcher below).
       if (cfg.normalIntervalMs === 0) return;
 
-      let delayMs: number;
-      if (
-        cfg.alertWindowMs > 0 &&
-        s.afterInstructionAlertUntil &&
-        now < s.afterInstructionAlertUntil
-      ) {
-        delayMs = cfg.alertIntervalMs;
-      } else if (s.idleCycles >= cfg.idleTickThreshold) {
-        delayMs = cfg.idleIntervalMs;
-      } else {
-        delayMs = cfg.normalIntervalMs;
-      }
+      const delayMs =
+        s.idleCycles >= cfg.idleTickThreshold
+          ? cfg.idleIntervalMs
+          : cfg.normalIntervalMs;
 
       timerRef.current = window.setTimeout(scheduledTick, delayMs);
     }
@@ -470,6 +451,9 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
       if (lastNudgeAt !== null && Date.now() - lastNudgeAt < TS_NUDGE_REPEAT_INTERVAL_MS)
         return;
 
+      // Don't nudge while something is still being spoken.
+      if (isSpeaking()) return;
+
       lastNudgeAt = Date.now();
       speakRef.current(randomWaitingPhrase());
 
@@ -485,25 +469,18 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
     };
   }, []);
 
-  // Input-triggered check: fire an immediate tick on mouse/keyboard activity.
-  // Suppressed in training (would interrupt demos) and teacher (conversation-driven).
-  useEffect(() => {
-    const unsub = api().input.onActivity(() => {
-      const s = useSession.getState();
-      if (s.status !== "watching") return;
-      const cfg = getModeConfig(
-        s.mode,
-        useSettings.getState().settings?.captureIntervalSec ?? 15,
-      );
-      if (!cfg.inputTriggeredEnabled) return;
-      if (
-        cfg.alertWindowMs > 0 &&
-        s.afterInstructionAlertUntil &&
-        Date.now() < s.afterInstructionAlertUntil
-      )
-        return;
-      void tickRef.current();
-    });
-    return unsub;
-  }, []);
+  // Quiet period trigger: wait for TS_QUIET_PERIOD_MS of silence after user
+  // activity, then fire a tick. Disabled in training and teacher modes (cfg.quietPeriodMs=0).
+  useQuietPeriod(TS_QUIET_PERIOD_MS, () => {
+    const s = useSession.getState();
+    if (s.status !== "watching") return;
+    // Don't fire a tick while TTS is actively playing — it would cancel the audio.
+    if (isSpeaking()) return;
+    const cfg = getModeConfig(
+      s.mode,
+      useSettings.getState().settings?.captureIntervalSec ?? 15,
+    );
+    if (cfg.quietPeriodMs <= 0) return;
+    void tickRef.current();
+  });
 }

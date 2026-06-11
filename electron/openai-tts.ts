@@ -18,11 +18,12 @@ export interface SpeakOptions {
 }
 
 const TONE_INSTRUCTIONS =
-  "Speak with energy and a friendly edge — like a sharp, enthusiastic friend who actually knows what they're talking about. " +
-  "Be warm but direct. Vary your pacing and let a bit of personality come through. " +
-  "Not robotic, not overly peppy — just real and slightly quick-witted.";
+  "Speak in a warm, conversational tone — like a patient, knowledgeable friend sitting next to you. " +
+  "Take your time between sentences. Natural pauses, unhurried pacing. " +
+  "Friendly but calm — not peppy, not flat. Real, relaxed, and easy to follow.";
 
-function toSupportedVoice(voice: TtsVoice): SupportedVoice {
+// Remap extended voices to the subset supported by tts-1-hd fallback only.
+function toFallbackVoice(voice: TtsVoice): SupportedVoice {
   switch (voice) {
     case "coral":
       return "shimmer";
@@ -41,14 +42,16 @@ export async function speakText(
   if (!apiKey) throw new Error("missing_openai_key");
 
   const client = new OpenAI({ apiKey });
-  const voice = toSupportedVoice(opts.voice ?? "nova");
+  const voice = opts.voice ?? "nova";
+  const fallbackVoice = toFallbackVoice(voice);
 
-  // Try the expressive model first — it accepts tone instructions and sounds
-  // noticeably more human. Falls back to tts-1-hd if the account lacks access.
+  // Try the expressive model first — it accepts tone instructions, supports all
+  // voices including coral/sage, and sounds noticeably more human.
+  // Falls back to tts-1-hd on 403/404/400/422 (account lacks access).
   try {
     const response = await client.audio.speech.create({
       model: "gpt-4o-mini-tts" as "tts-1-hd",
-      voice,
+      voice: voice as SupportedVoice,
       input: text,
       response_format: "mp3",
       instructions: TONE_INSTRUCTIONS,
@@ -56,10 +59,10 @@ export async function speakText(
     return Buffer.from(await response.arrayBuffer());
   } catch (err) {
     const status = (err as { status?: number })?.status;
-    if (status === 404 || status === 400 || status === 422) {
+    if (status === 403 || status === 404 || status === 400 || status === 422) {
       const response = await client.audio.speech.create({
         model: "tts-1-hd",
-        voice,
+        voice: fallbackVoice,
         input: text,
         response_format: "mp3",
       });

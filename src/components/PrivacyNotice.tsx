@@ -1,4 +1,5 @@
 import { useTheme } from "../design/ThemeProvider";
+import { api } from "../lib/api";
 import { ar, lt } from "../design/theme";
 
 interface Props {
@@ -45,20 +46,32 @@ export function PrivacyNotice({ onAccept }: Props) {
       >
         Avoid having passwords or sensitive data on screen unless you trust the recipient API.
       </p>
-      <button
-        onClick={onAccept}
-        style={{
-          marginTop: "auto", alignSelf: "flex-end",
-          borderRadius: 11, padding: "9px 22px",
-          fontSize: 12.5, fontWeight: 600,
-          background: `linear-gradient(180deg, ${T.accent}, ${T.accentDeep})`,
-          color: T.onAccent, border: 0, cursor: "pointer",
-          boxShadow: `0 4px 12px -4px ${ar(T.accentRGB, 0.7)}`,
-          transition: "opacity 150ms",
-        }}
-      >
-        I understand, continue
-      </button>
+      <div style={{ marginTop: "auto", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <button
+          onClick={() => void api().app.quit()}
+          style={{
+            borderRadius: 9, padding: "7px 14px",
+            fontSize: 11.5, fontWeight: 500,
+            background: "transparent", color: T.ink3,
+            border: `1px solid ${lt(0.1)}`, cursor: "pointer",
+          }}
+        >
+          Quit
+        </button>
+        <button
+          onClick={onAccept}
+          style={{
+            borderRadius: 11, padding: "9px 22px",
+            fontSize: 12.5, fontWeight: 600,
+            background: `linear-gradient(180deg, ${T.accent}, ${T.accentDeep})`,
+            color: T.onAccent, border: 0, cursor: "pointer",
+            boxShadow: `0 4px 12px -4px ${ar(T.accentRGB, 0.7)}`,
+            transition: "opacity 150ms",
+          }}
+        >
+          I understand, continue
+        </button>
+      </div>
     </div>
   );
 }

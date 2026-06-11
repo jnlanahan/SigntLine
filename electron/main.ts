@@ -2,9 +2,13 @@ import {
   app,
   BrowserWindow,
   dialog,
+  globalShortcut,
   ipcMain,
+  Menu,
+  nativeImage,
   screen,
   shell,
+  Tray,
   type IpcMainInvokeEvent,
 } from "electron";
 import { fileURLToPath } from "node:url";
@@ -22,6 +26,7 @@ import {
 } from "./credentials";
 import {
   getClarifications,
+  getGoalEvaluation,
   getNextInstruction,
   getSessionPlan,
   MissingApiKeyError,
@@ -78,6 +83,7 @@ async function loadKeysFromEnv() {
 
 let mainWindow: BrowserWindow | null = null;
 let glowWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
 let glowAdjusting = false;
 let inputDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -333,7 +339,7 @@ function createWindow() {
 
   mainWindow = new BrowserWindow({
     width:  saved?.width  ?? 380,
-    height: saved?.height ?? 520,
+    height: saved?.height ?? 720,
     x:      saved?.x,
     y:      saved?.y,
     minWidth: 320,
@@ -405,6 +411,22 @@ app.whenReady().then(async () => {
   uIOhook.on("click", scheduleInputTick);
   uIOhook.on("keyup", scheduleInputTick);
   uIOhook.start();
+
+  // System tray — always-available quit fallback regardless of which view is open.
+  const trayIcon = nativeImage.createEmpty();
+  tray = new Tray(trayIcon);
+  tray.setToolTip("SightLine");
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: "Show SightLine", click: () => mainWindow?.show() },
+      { type: "separator" },
+      { label: "Quit SightLine", click: () => app.quit() },
+    ]),
+  );
+  tray.on("click", () => mainWindow?.show());
+
+  // Ctrl+Q as a global keyboard shortcut to quit from anywhere.
+  globalShortcut.register("Control+Q", () => app.quit());
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -717,4 +739,26 @@ function registerIpc() {
   ipcMain.on("session:log", (_e, message: string) => {
     console.log("[renderer]", message);
   });
+
+  ipcMain.handle(
+    "claude:evaluate-goal",
+    async (
+      _e: IpcMainInvokeEvent,
+      payload: {
+        mode: AppMode;
+        goal: string;
+        completedSteps: string[];
+        conversation: ConversationTurn[];
+        frames: CaptureFrame[];
+      },
+    ) => {
+      try {
+        return await getGoalEvaluation(payload);
+      } catch (err) {
+        if (err instanceof MissingApiKeyError) return { __error: "missing_api_key" };
+        const msg = err instanceof Error ? err.message : String(err);
+        return { __error: "request_failed", message: msg };
+      }
+    },
+  );
 }

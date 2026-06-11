@@ -8,7 +8,8 @@ export type SessionStatus =
   | "paused"
   | "error"
   | "clarifying"
-  | "researching";
+  | "researching"
+  | "evaluating";
 
 export interface CompletedStep {
   index: number;
@@ -74,6 +75,11 @@ export interface SessionPlan {
   steps: string[];
 }
 
+export interface GoalEvaluation {
+  achieved: boolean;
+  verdict: string;
+}
+
 export type TtsVoiceId =
   | "alloy"
   | "echo"
@@ -103,6 +109,7 @@ export interface Settings {
   ttsVoice: TtsVoiceId;
   accentColor: AccentName;
   windowBounds: WindowBounds | null;
+  solidBackground: boolean;
 }
 
 export interface DisplayInfo {
@@ -140,4 +147,5 @@ export type IpcChannel =
   | "overlay:commit-region"
   | "overlay:cancel-adjust"
   | "tts:speak"
-  | "session:log";
+  | "session:log"
+  | "claude:evaluate-goal";

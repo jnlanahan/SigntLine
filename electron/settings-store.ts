@@ -9,10 +9,11 @@ const DEFAULTS: Settings = {
   selectedDisplayId: null,
   captureRegion: null,
   hasSeenPrivacyNotice: false,
-  ttsEnabled: false,
+  ttsEnabled: true,
   ttsVoice: "nova",
   accentColor: "lime",
   windowBounds: null,
+  solidBackground: false,
 };
 
 function settingsPath(): string {

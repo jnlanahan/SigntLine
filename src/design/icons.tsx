@@ -39,3 +39,6 @@ export const ICap = ({ c = "currentColor" }: IconProps) => (
 export const IChevron = ({ c = "currentColor" }: IconProps) => (
   <svg width="9" height="12" viewBox="0 0 9 12" fill="none"><path d="M2 1l5 5-5 5" stroke={c} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
 );
+export const IMonitor = ({ c = "currentColor" }: IconProps) => (
+  <svg style={sq} viewBox="0 0 20 20" fill="none"><rect x="2.5" y="3.5" width="15" height="10" rx="1.8" stroke={c} strokeWidth="1.6" /><path d="M7 17h6M10 13.5V17" stroke={c} strokeWidth="1.6" strokeLinecap="round" /></svg>
+);

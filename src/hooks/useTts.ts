@@ -3,13 +3,14 @@ import { useSettings } from "../store/settings";
 
 // Spoken when the user has been idle for a while with no screen change.
 export const WAITING_PHRASES = [
-  "No rush — I'm right here whenever you're ready.",
-  "Take your time, I'll be watching.",
-  "Whenever you're ready to give that a try, I'll see it.",
-  "Go ahead — I'll keep an eye out and chime in once you do.",
-  "Still here. Just let me know if anything's confusing.",
-  "Take a sec — I'll notice as soon as you make a move.",
-  "All good. I'm waiting on you when you're ready.",
+  "No rush — take your time.",
+  "Still here whenever you're ready.",
+  "Go ahead and give that a try.",
+  "Take a sec, I'm not going anywhere.",
+  "Whenever you're ready, I'll pick it up.",
+  "Feel free to ask if anything's unclear.",
+  "I'm watching — take as long as you need.",
+  "No rush — just ask if you get stuck.",
 ];
 
 // Spoken on goal completion.
@@ -48,12 +49,27 @@ let currentAudio: HTMLAudioElement | null = null;
 let speakGeneration = 0;
 let lastTtsMode: "openai" | "system" | "none" | null = null;
 
+// Speech completion tracking — lets the session loop wait for audio to finish
+// before scheduling the next tick, preventing mid-sentence cutoffs.
+let speakDoneResolve: (() => void) | null = null;
+let speakDonePromise: Promise<void> = Promise.resolve();
+
+export function waitForSpeechEnd(): Promise<void> {
+  return speakDonePromise;
+}
+
 export function getTtsMode(): "openai" | "system" | "none" | null {
   return lastTtsMode;
 }
 
+export function isSpeaking(): boolean {
+  return currentAudio !== null;
+}
+
 function cancelCurrent() {
   speakGeneration++;
+  speakDoneResolve?.(); // speech is done (cancelled) — unblock any waiters
+  speakDoneResolve = null;
   if (currentAudio) {
     currentAudio.pause();
     currentAudio.src = "";
@@ -85,6 +101,12 @@ async function playOpenAI(text: string, gen: number): Promise<boolean> {
     audio.onended = () => {
       URL.revokeObjectURL(blobUrl);
       if (currentAudio === audio) currentAudio = null;
+      // Only resolve if this is still the active speech (gen guard prevents
+      // a stale onended from resolving a newer instruction's promise).
+      if (gen === speakGeneration) {
+        speakDoneResolve?.();
+        speakDoneResolve = null;
+      }
     };
 
     try {
@@ -151,20 +173,39 @@ function playWebSpeech(text: string) {
   }
 }
 
+function preprocessForTts(text: string): string {
+  return text
+    .replace(/^(Okay|Alright|Cool|Nice|Right|Great|Got it|Perfect)(\s+)/i, "$1,$2")
+    .replace(/ — /g, ", ")
+    .replace(/\.{3}$/, ".");
+}
+
 export function useTts() {
   function speak(text: string) {
-    const trimmed = text.trim();
+    const trimmed = preprocessForTts(text.trim());
     if (!trimmed) return;
-    cancelCurrent();
+    cancelCurrent(); // resolves previous promise, increments generation
+    // Create new completion promise for this speech instance.
+    speakDonePromise = new Promise<void>((resolve) => {
+      speakDoneResolve = resolve;
+    });
     lastTtsMode = null;
     const gen = speakGeneration;
 
     void playOpenAI(trimmed, gen).then((used) => {
       if (!used && gen === speakGeneration) {
         playWebSpeech(trimmed);
+        // Web Speech has no reliable end event — resolve immediately so the
+        // session loop isn't stuck waiting indefinitely.
+        speakDoneResolve?.();
+        speakDoneResolve = null;
       } else if (!used) {
         lastTtsMode = "none";
+        speakDoneResolve?.();
+        speakDoneResolve = null;
       }
+      // If used=true: audio is playing; onended will resolve the promise.
+      // If gen !== speakGeneration: cancelCurrent() already resolved it.
     });
   }
 

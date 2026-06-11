@@ -5,6 +5,7 @@ import type {
   Clarification,
   ClarificationResponse,
   ConversationTurn,
+  GoalEvaluation,
   InstructionResponse,
   SessionPlan,
 } from "./types";
@@ -17,6 +18,8 @@ const MAX_FRAMES = 5;
 // Per-mode role intros. The voice + output rules are shared so the rest of the
 // streaming/parsing pipeline is identical across modes.
 const TECH_SUPPORT_INTRO = `You are a sharp, energetic coach helping the user through a task in real time — like a knowledgeable friend who's a little bit sassy but always on your side. You can see the user's screen. Walk them through whatever they're trying to do, one concrete step at a time.
+
+Pace yourself. Give one instruction, then be quiet and wait. The app is watching the screen — you don't need to front-load multiple steps in one message.
 
 In this mode "completed_steps" is the running list of steps the user has already done, and "done" is true only when their stated goal is fully achieved.`;
 
@@ -52,6 +55,8 @@ const VOICE_RULES = `Voice rules (spoken text comes through TTS, so prefer short
 - Sound like a human, not a script. Use contractions ("you'll", "it's", "let's", "we'll"). Drop filler openers like "Now," or "Please." Speak like you're sitting next to the person.
 - Make instructions feel like suggestions, not commands. "Go ahead and click…" beats "Click…". "You'll want to…" beats "You must…".
 - Keep responses tight — usually 2 to 4 short sentences, never more than 80 words.
+- One action per response. Don't chain two separate clicks into one message. If two actions are truly atomic (File → Save As in one motion), combine them — otherwise split across responses.
+- End on a natural landing point. Don't trail off mid-clause — "Go ahead and click the gear icon." not "...and once that opens you'll want to look for…"
 - Vary your openers. Mix: "Okay, go ahead and…", "Cool — next up…", "Alright, now…", "Nice. Then…", "From here, just…", "Quick one —", "Easy part:", "Go ahead and…". Never repeat the same opener twice in a row.
 - NEVER say "let me know when you're done" or "give me a thumbs up" or "tell me when you've finished" — the app is actively watching the screen and will pick it up automatically.
 - If the screen looks the same as before, give one small extra hint or ask a specific clarifying question. Don't repeat yourself verbatim.
@@ -373,9 +378,12 @@ export async function getClarifications(args: {
 }
 
 const SESSION_PLAN_SYSTEM_PROMPT: Record<AppMode, string> = {
-  tech_support: `You generate a brief, friendly session plan. Given the user's goal and their answers to clarifying questions, produce a casual spoken overview (under 60 words, first-person "we'll" / "let's") and a list of 3-6 high-level steps. The overview is what the AI will speak aloud — make it warm and natural, like a knowledgeable friend briefing you before you start. Output JSON only: {"overview": "...", "steps": ["...", "...", "..."]}`,
-  training: `You generate a brief, friendly training session plan. Given what the user wants to document, produce a casual spoken overview (under 60 words) and 3-6 high-level steps of how the training capture session will go. Output JSON only: {"overview": "...", "steps": ["...", "...", "..."]}`,
-  teacher: `You generate a brief, friendly learning session plan. Given the subject and the learner's answers, produce a casual spoken overview (under 60 words) and 3-6 high-level concepts or topics you'll cover together. Output JSON only: {"overview": "...", "steps": ["...", "...", "..."]}`,
+  tech_support: `You generate a focused, accurate session plan. Given the user's goal and any clarifying answers, output a JSON plan with:
+- "overview": A casual spoken intro (under 60 words, first-person "we'll"/"let's"). Warm and natural, like a knowledgeable friend getting you ready. Specific to this exact goal — not generic.
+- "steps": 3-6 steps that directly match what needs to happen for this specific goal. Each step is an action phrase (under 8 words). BAD: "Open the application", "Configure settings", "Test the results". GOOD (for "set up a VPN"): "Download VPN client", "Create your account", "Install and configure", "Connect to a server", "Verify the connection". Make steps match the actual task, not a generic workflow template.
+Output JSON only: {"overview": "...", "steps": ["...", "...", "..."]}`,
+  training: `You generate a brief, friendly training session plan. Given what the user wants to document, produce a casual spoken overview (under 60 words) and 3-6 steps that specifically describe the content being captured. Steps should name the actual screens, features, or workflows being documented — not generic phrases like "record the process". Output JSON only: {"overview": "...", "steps": ["...", "...", "..."]}`,
+  teacher: `You generate a brief, friendly learning session plan. Given the subject and the learner's answers, produce a casual spoken overview (under 60 words) and 3-6 specific concepts or questions you'll explore together. Each step should name a concrete topic, not a generic phase like "introduction" or "wrap up". Output JSON only: {"overview": "...", "steps": ["...", "...", "..."]}`,
 };
 
 export async function getSessionPlan(args: {
@@ -419,6 +427,65 @@ export async function getSessionPlan(args: {
     // fail safe
   }
   return { overview: "", steps: [] };
+}
+
+export async function getGoalEvaluation(args: {
+  mode: AppMode;
+  goal: string;
+  completedSteps: string[];
+  conversation: ConversationTurn[];
+  frames: CaptureFrame[];
+}): Promise<GoalEvaluation> {
+  const apiKey = await getKey("anthropic");
+  if (!apiKey) throw new MissingApiKeyError();
+
+  const client = new Anthropic({ apiKey });
+
+  const stepsSummary = args.completedSteps.length > 0
+    ? `Completed steps: ${args.completedSteps.join(", ")}`
+    : "No steps recorded yet.";
+
+  const recentConvo = args.conversation
+    .slice(-6)
+    .map((t) => `${t.role === "user" ? "User" : "AI"}: ${t.content}`)
+    .join("\n");
+
+  const frameContent = args.frames.slice(-2).map((f) => ({
+    type: "image" as const,
+    source: {
+      type: "base64" as const,
+      media_type: "image/png" as const,
+      data: f.dataUrl.replace(/^data:image\/\w+;base64,/, ""),
+    },
+  }));
+
+  const userContent = [
+    ...frameContent,
+    {
+      type: "text" as const,
+      text: `Goal: "${args.goal}"\n\n${stepsSummary}\n\nRecent conversation:\n${recentConvo}\n\nDid the user successfully complete their goal based on the screen and conversation? Return JSON: {"achieved": true/false, "verdict": "2-3 sentence honest but encouraging assessment"}`,
+    },
+  ];
+
+  try {
+    const resp = await client.messages.create({
+      model: MODEL,
+      max_tokens: 200,
+      system: "You evaluate whether a user has completed their stated goal, based on screenshots and conversation history. Be honest, specific, and encouraging. Never invent progress that isn't visible.",
+      messages: [{ role: "user", content: userContent }],
+    });
+    const text = extractText(resp);
+    const json = extractJson(text);
+    if (json) {
+      const obj = JSON.parse(json) as { achieved?: boolean; verdict?: string };
+      if (typeof obj.achieved === "boolean" && obj.verdict) {
+        return { achieved: obj.achieved, verdict: String(obj.verdict).trim() };
+      }
+    }
+  } catch {
+    // fail safe
+  }
+  return { achieved: false, verdict: "Couldn't evaluate at this time. Keep going — you're making progress!" };
 }
 
 function extractJson(text: string): string | null {
