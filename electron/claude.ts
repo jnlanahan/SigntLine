@@ -451,19 +451,32 @@ export async function getClarifications(args: {
   return { questions: [] };
 }
 
+const PLAN_RESEARCH_RULE = `You have a "web_search" tool. The user is a non-expert who needs accurate, current steps — do not guess. If the goal depends on specifics you are not fully sure of (a product's current UI, exact menu paths, a specific command or setting, recent app changes), search the web FIRST and base the plan on what you find. If a screenshot of the user's screen is attached, read it: tailor the plan to what they actually have open (their OS, app, and where they are in the task). After any searching, output the plan and nothing else.`;
+
 const SESSION_PLAN_SYSTEM_PROMPT: Record<AppMode, string> = {
   tech_support: `You generate a focused, accurate session plan. Given the user's goal and any clarifying answers, output a JSON plan with:
 - "overview": A casual spoken intro (under 60 words, first-person "we'll"/"let's"). Warm and natural, like a knowledgeable friend getting you ready. Specific to this exact goal — not generic.
 - "steps": 3-6 steps that directly match what needs to happen for this specific goal. Each step is an action phrase (under 8 words). BAD: "Open the application", "Configure settings", "Test the results". GOOD (for "set up a VPN"): "Download VPN client", "Create your account", "Install and configure", "Connect to a server", "Verify the connection". Make steps match the actual task, not a generic workflow template.
-Output JSON only: {"overview": "...", "steps": ["...", "...", "..."]}`,
-  training: `You generate a brief, friendly training session plan. Given what the user wants to document, produce a casual spoken overview (under 60 words) and 3-6 steps that specifically describe the content being captured. Steps should name the actual screens, features, or workflows being documented — not generic phrases like "record the process". Output JSON only: {"overview": "...", "steps": ["...", "...", "..."]}`,
-  teacher: `You generate a brief, friendly learning session plan. Given the subject and the learner's answers, produce a casual spoken overview (under 60 words) and 3-6 specific concepts or questions you'll explore together. Each step should name a concrete topic, not a generic phase like "introduction" or "wrap up". Output JSON only: {"overview": "...", "steps": ["...", "...", "..."]}`,
+
+${PLAN_RESEARCH_RULE}
+Output JSON only, with no prose or code fences around it: {"overview": "...", "steps": ["...", "...", "..."]}`,
+  training: `You generate a brief, friendly training session plan. Given what the user wants to document, produce a casual spoken overview (under 60 words) and 3-6 steps that specifically describe the content being captured. Steps should name the actual screens, features, or workflows being documented — not generic phrases like "record the process".
+
+${PLAN_RESEARCH_RULE}
+Output JSON only, with no prose or code fences around it: {"overview": "...", "steps": ["...", "...", "..."]}`,
+  teacher: `You generate a brief, friendly learning session plan. Given the subject and the learner's answers, produce a casual spoken overview (under 60 words) and 3-6 specific concepts or questions you'll explore together. Each step should name a concrete topic, not a generic phase like "introduction" or "wrap up".
+
+${PLAN_RESEARCH_RULE}
+Output JSON only, with no prose or code fences around it: {"overview": "...", "steps": ["...", "...", "..."]}`,
 };
 
 export async function getSessionPlan(args: {
   mode: AppMode;
   goal: string;
   clarifications: Clarification[];
+  // base64 data URL of the user's current screen, attached so the planner can
+  // tailor steps to what's actually on screen. Optional.
+  screenshot?: string;
 }): Promise<SessionPlan> {
   const apiKey = await getKey("anthropic");
   if (!apiKey) throw new MissingApiKeyError();
@@ -474,18 +487,56 @@ export async function getSessionPlan(args: {
     .map((c) => `Q: ${c.question}\nA: ${c.answer}`)
     .join("\n");
 
-  try {
-    const resp = await client.messages.create({
-      model: MODEL,
-      max_tokens: 300,
-      system: SESSION_PLAN_SYSTEM_PROMPT[args.mode],
-      messages: [
-        {
-          role: "user",
-          content: `Goal: ${args.goal}${clarText ? `\n\nClarifications:\n${clarText}` : ""}`,
-        },
-      ],
+  const userContent: Array<
+    Anthropic.Messages.TextBlockParam | Anthropic.Messages.ImageBlockParam
+  > = [];
+  if (args.screenshot) {
+    userContent.push({
+      type: "text",
+      text: "Here's the user's current screen for context:",
     });
+    userContent.push({
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: "image/png",
+        data: stripDataUrlPrefix(args.screenshot),
+      },
+    });
+  }
+  userContent.push({
+    type: "text",
+    text: `Goal: ${args.goal}${clarText ? `\n\nClarifications:\n${clarText}` : ""}`,
+  });
+
+  // Try with web search enabled; if the account/API rejects the tool, retry
+  // without it so we still produce a plan (just without live lookups).
+  async function callPlan(useWebSearch: boolean) {
+    const params: Anthropic.Messages.MessageCreateParamsNonStreaming = {
+      model: MODEL,
+      max_tokens: 1500,
+      system: SESSION_PLAN_SYSTEM_PROMPT[args.mode],
+      messages: [{ role: "user", content: userContent }],
+    };
+    if (useWebSearch) {
+      // web_search is a server-side tool; the SDK types here predate it, so we
+      // attach it loosely. The API runs the search loop and returns the final
+      // plan text in one response.
+      (params as { tools?: unknown }).tools = [
+        { type: "web_search_20250305", name: "web_search", max_uses: 3 },
+      ];
+    }
+    return client.messages.create(params);
+  }
+
+  try {
+    let resp;
+    try {
+      resp = await callPlan(true);
+    } catch (err) {
+      console.warn("[SightLine plan] web search unavailable, retrying without:", err);
+      resp = await callPlan(false);
+    }
     const text = extractText(resp);
     const json = extractJson(text);
     if (json) {

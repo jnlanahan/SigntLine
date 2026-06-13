@@ -95,14 +95,31 @@ function cancelCurrent() {
   if (typeof window !== "undefined") window.speechSynthesis?.cancel();
 }
 
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_resolve, reject) =>
+      setTimeout(() => reject(new Error(label)), ms),
+    ),
+  ]);
+}
+
 async function playCloud(text: string, gen: number): Promise<boolean> {
   try {
     const voice = useSettings.getState().settings?.ttsVoice;
-    const result = await api().tts.speak(text, voice);
+    // Bound the IPC round-trip. The main process already times out each TTS
+    // engine, but this is a final guard so a stuck channel can never leave
+    // playback hung — on timeout we fall through to the web-speech fallback.
+    const result = await withTimeout(
+      api().tts.speak(text, voice),
+      18_000,
+      "tts_ipc_timeout",
+    );
     if (gen !== speakGeneration) return true; // cancelled while waiting
     if ("__error" in result) {
       const msg = (result as { message?: string }).message ?? "";
       console.warn("[SightLine TTS] cloud TTS error:", result.__error, msg);
+      api().log(`[tts] cloud error: ${result.__error} ${msg}`.trim());
       return false;
     }
 
@@ -151,7 +168,9 @@ async function playCloud(text: string, gen: number): Promise<boolean> {
       return false;
     }
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
     console.warn("[SightLine TTS] cloud TTS failed:", err);
+    api().log(`[tts] cloud failed: ${msg}`);
     return false;
   }
 }

@@ -50,14 +50,20 @@ export async function speakTextGoogle(
   const voiceName = (voice && VOICE_MAP[voice]) ? VOICE_MAP[voice] : DEFAULT_VOICE;
 
   // Chirp 3 HD voices reject SSML — plain text only; their prosody is native.
-  const [response] = await getClient().synthesizeSpeech({
-    input: { text },
-    voice: { languageCode: "en-US", name: voiceName },
-    audioConfig: {
-      audioEncoding: "MP3" as const,
-      speakingRate: 1.0,
+  // The explicit per-call timeout matters: without it a wedged gRPC channel can
+  // hang this call forever, which silently kills TTS for the rest of the
+  // session (no error is thrown, so the OpenAI/system fallback never runs).
+  const [response] = await getClient().synthesizeSpeech(
+    {
+      input: { text },
+      voice: { languageCode: "en-US", name: voiceName },
+      audioConfig: {
+        audioEncoding: "MP3" as const,
+        speakingRate: 1.0,
+      },
     },
-  });
+    { timeout: 8000 },
+  );
 
   return Buffer.from(response.audioContent as Uint8Array);
 }

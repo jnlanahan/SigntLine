@@ -15,6 +15,7 @@ const DEFAULTS: Settings = {
   windowBounds: null,
   solidBackground: true,
   uiOpaqueMigration: false,
+  uiSideRailMigration: false,
 };
 
 function settingsPath(): string {

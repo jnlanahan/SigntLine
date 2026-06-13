@@ -128,6 +128,9 @@ export interface Settings {
   // One-time migration flag: forces opacity/solidBackground to opaque once
   // for settings saved before the opaque-by-default change.
   uiOpaqueMigration: boolean;
+  // One-time migration flag: widens the saved window once for the side-rail
+  // layout (plan steps now live in a right-hand column that needs room).
+  uiSideRailMigration: boolean;
 }
 
 export interface DisplayInfo {

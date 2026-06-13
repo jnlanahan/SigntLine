@@ -41,6 +41,17 @@ import { uIOhook } from "uiohook-napi";
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || "http://localhost:5173";
 const isDev = !app.isPackaged;
 
+// Reject a promise that runs past `ms`. Used to bound external calls (TTS
+// engines) so one hung request can't wedge a whole feature.
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_resolve, reject) =>
+      setTimeout(() => reject(new Error(label)), ms),
+    ),
+  ]);
+}
+
 function parseEnvFile(content: string): Record<string, string> {
   const result: Record<string, string> = {};
   for (const line of content.split("\n")) {
@@ -342,11 +353,11 @@ function createWindow() {
   const saved = settings.windowBounds;
 
   mainWindow = new BrowserWindow({
-    width:  saved?.width  ?? 380,
+    width:  saved?.width  ?? 540,
     height: saved?.height ?? 720,
     x:      saved?.x,
     y:      saved?.y,
-    minWidth: 320,
+    minWidth: 460,
     minHeight: 380,
     frame: false,
     transparent: true,
@@ -405,6 +416,17 @@ app.whenReady().then(async () => {
   if (!loadSettings().uiOpaqueMigration) {
     saveSettings({ opacity: 1, solidBackground: true, uiOpaqueMigration: true });
     console.log("[settings] applied one-time opaque-UI migration");
+  }
+
+  // One-time migration: the side-rail layout needs more horizontal room, so
+  // widen any saved window that's narrower than the new minimum just once.
+  if (!loadSettings().uiSideRailMigration) {
+    const wb = loadSettings().windowBounds;
+    saveSettings({
+      windowBounds: wb ? { ...wb, width: Math.max(540, wb.width) } : null,
+      uiSideRailMigration: true,
+    });
+    console.log("[settings] applied one-time side-rail width migration");
   }
 
   registerIpc();
@@ -599,7 +621,12 @@ function registerIpc() {
     "claude:get-session-plan",
     async (
       _e: IpcMainInvokeEvent,
-      args: { mode: AppMode; goal: string; clarifications: Clarification[] },
+      args: {
+        mode: AppMode;
+        goal: string;
+        clarifications: Clarification[];
+        screenshot?: string;
+      },
     ) => {
       try {
         return await getSessionPlan(args);
@@ -723,10 +750,17 @@ function registerIpc() {
     ) => {
       // Fallback chain: Google Chirp 3 → OpenAI → error envelope. The
       // renderer only reaches the system voice when both cloud engines fail.
+      // Each engine is wrapped in a hard timeout so a single wedged request
+      // can't permanently silence TTS — a slow Google call falls through to
+      // OpenAI, a slow OpenAI call surfaces an error the renderer can log.
       let googleErr = "";
       if (hasGoogleCredentials()) {
         try {
-          const buffer = await speakTextGoogle(payload.text, payload.voice);
+          const buffer = await withTimeout(
+            speakTextGoogle(payload.text, payload.voice),
+            10_000,
+            "google_tts_timeout",
+          );
           return { audioBase64: buffer.toString("base64"), engine: "google" as const };
         } catch (err) {
           googleErr = err instanceof Error ? err.message : String(err);
@@ -734,13 +768,18 @@ function registerIpc() {
         }
       }
       try {
-        const buffer = await speakText(payload.text, { voice: payload.voice });
+        const buffer = await withTimeout(
+          speakText(payload.text, { voice: payload.voice }),
+          15_000,
+          "openai_tts_timeout",
+        );
         return { audioBase64: buffer.toString("base64"), engine: "openai" as const };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (!googleErr && msg.includes("missing_openai_key")) {
           return { __error: "missing_openai_key" } as const;
         }
+        console.warn("[SightLine TTS] all engines failed:", googleErr, msg);
         return {
           __error: "request_failed",
           message: [googleErr, msg].filter(Boolean).join(" / "),

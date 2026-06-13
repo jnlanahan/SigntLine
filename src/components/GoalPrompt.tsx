@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useVoice } from "../hooks/useVoice";
 import { useTts } from "../hooks/useTts";
+import { useSettings } from "../store/settings";
 import { api } from "../lib/api";
 import { useTheme } from "../design/ThemeProvider";
 import { Eyebrow } from "../design/primitives";
@@ -32,6 +33,7 @@ export function GoalPrompt({ mode, onStart, onBack }: Props) {
   const T = useTheme();
   const copy = PROMPT_COPY[mode];
   const { speak } = useTts();
+  const selectedDisplayId = useSettings((s) => s.settings?.selectedDisplayId ?? null);
 
   const [value, setValue] = useState("");
   const [phase, setPhase] = useState<"input" | "clarifying" | "planning">("input");
@@ -71,8 +73,17 @@ export function GoalPrompt({ mode, onStart, onBack }: Props) {
   async function fetchPlan(goal: string, clarifications: Clarification[]) {
     setLoadingPlan(true);
     setPhase("planning");
+    // Grab a snapshot of the screen so the planner can see what the user
+    // actually has open. Best-effort — a capture failure just means no image.
+    let screenshot: string | undefined;
     try {
-      const result = await api().claude.getSessionPlan({ mode, goal, clarifications });
+      const frame = await api().capture.once(selectedDisplayId);
+      screenshot = frame.dataUrl;
+    } catch {
+      // no screenshot — plan from text only
+    }
+    try {
+      const result = await api().claude.getSessionPlan({ mode, goal, clarifications, screenshot });
       if ("overview" in result) {
         setPlan(result);
         if (result.overview) speak(result.overview);

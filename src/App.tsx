@@ -326,54 +326,73 @@ export default function App() {
           )}
         </div>
       ) : (
-        /* Session layout: sticky top info + scrollable chat + pinned input */
-        <div className="flex flex-1 flex-col" style={{ minHeight: 0 }}>
-          {/* Sticky top section — always visible */}
-          <div className="flex flex-col gap-2.5 px-3 pt-2 pb-1" style={{ flexShrink: 0 }}>
-            <div className="flex flex-col gap-0.5">
-              <p className="font-mono text-[9px] uppercase tracking-widest text-sl-ink3">
-                {MODE_META[mode].goalLabel}
-              </p>
-              <p className="text-xs leading-snug text-sl-ink2">{goal}</p>
+        /* Session layout: left column (instruction + chat + input) + right plan rail */
+        <div className="flex flex-1" style={{ minHeight: 0 }}>
+          {/* Left column — the main conversation */}
+          <div className="flex flex-1 flex-col" style={{ minWidth: 0, minHeight: 0 }}>
+            {/* Sticky top: goal + context + the current big instruction */}
+            <div className="flex flex-col gap-2.5 px-3 pt-2 pb-1" style={{ flexShrink: 0 }}>
+              <div className="flex flex-col gap-0.5">
+                <p className="font-mono text-[9px] uppercase tracking-widest text-sl-ink3">
+                  {MODE_META[mode].goalLabel}
+                </p>
+                <p className="text-xs leading-snug text-sl-ink2">{goal}</p>
+              </div>
+              <ContextPanel
+                fileNames={attachedFileNames}
+                notes={agentNotes}
+                onAttach={attachContext}
+              />
+              <Instruction
+                instruction={instruction}
+                status={status}
+                done={done}
+                error={error}
+                researchQuery={researchQuery}
+              />
+              {evalResult && (
+                <EvalResultCard
+                  achieved={evalResult.achieved}
+                  verdict={evalResult.verdict}
+                  onDismiss={() => setEvalResult(null)}
+                />
+              )}
             </div>
-            <ContextPanel
-              fileNames={attachedFileNames}
-              notes={agentNotes}
-              onAttach={attachContext}
-            />
-            <Instruction
-              instruction={instruction}
-              status={status}
-              done={done}
-              error={error}
-              researchQuery={researchQuery}
-            />
+
+            {/* Scrollable conversation */}
+            <div className="flex-1 overflow-y-auto sl-scroll px-3 pb-1" style={{ minHeight: 0 }}>
+              <ConversationHistory turns={conversation} />
+            </div>
+
+            {/* Pinned follow-up input */}
+            <div className="px-3 pb-2 pt-1" style={{ flexShrink: 0 }}>
+              <FollowUpInput
+                isThinking={status === "thinking" || status === "evaluating"}
+                mode={mode}
+                onSubmit={submitFollowUp}
+              />
+            </div>
+          </div>
+
+          {/* Right plan rail — the step list, always visible, scrolls on its own */}
+          <div
+            className="sl-scroll"
+            style={{
+              width: 168,
+              flexShrink: 0,
+              borderLeft: `1px solid ${lt(0.08)}`,
+              display: "flex",
+              flexDirection: "column",
+              minHeight: 0,
+              overflowY: "auto",
+              padding: "8px 11px",
+            }}
+          >
             <CompletedSteps
               completedSteps={completedSteps}
               currentInstruction={instruction}
               upcomingSteps={upcomingSteps}
               noun={MODE_META[mode].stepNoun}
-            />
-            {evalResult && (
-              <EvalResultCard
-                achieved={evalResult.achieved}
-                verdict={evalResult.verdict}
-                onDismiss={() => setEvalResult(null)}
-              />
-            )}
-          </div>
-
-          {/* Scrollable conversation */}
-          <div className="flex-1 overflow-y-auto sl-scroll px-3 pb-1" style={{ minHeight: 0 }}>
-            <ConversationHistory turns={conversation} />
-          </div>
-
-          {/* Pinned follow-up input */}
-          <div className="px-3 pb-2 pt-1" style={{ flexShrink: 0 }}>
-            <FollowUpInput
-              isThinking={status === "thinking" || status === "evaluating"}
-              mode={mode}
-              onSubmit={submitFollowUp}
             />
           </div>
         </div>

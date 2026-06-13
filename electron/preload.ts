@@ -63,6 +63,7 @@ export interface SightLineApi {
       mode: AppMode;
       goal: string;
       clarifications: Clarification[];
+      screenshot?: string;
     }): Promise<SessionPlan | { __error: string; message?: string }>;
     onInstructionReady(cb: (text: string) => void): () => void;
     evaluateGoal(args: {
