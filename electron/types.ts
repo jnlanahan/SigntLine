@@ -40,7 +40,22 @@ export interface CaptureRegion {
   height: number;
 }
 
+// Pacing decision Claude makes each tick in tech_support mode. Modes that
+// don't emit an action default to "instruct" (or "done" when done=true).
+export type InstructionAction =
+  | "instruct"
+  | "wait"
+  | "acknowledge"
+  | "check_in"
+  | "done";
+
+// How long the current step should take a careful beginner — scales the
+// stall check-in timer in the session loop.
+export type StepPace = "quick" | "medium" | "long";
+
 export interface InstructionResponse {
+  action: InstructionAction;
+  expectedPace: StepPace;
   instruction: string;
   completedSteps: string[];
   upcomingSteps: string[];
@@ -110,6 +125,9 @@ export interface Settings {
   accentColor: AccentName;
   windowBounds: WindowBounds | null;
   solidBackground: boolean;
+  // One-time migration flag: forces opacity/solidBackground to opaque once
+  // for settings saved before the opaque-by-default change.
+  uiOpaqueMigration: boolean;
 }
 
 export interface DisplayInfo {
@@ -123,7 +141,11 @@ export interface DisplayInfo {
 export interface ApiKeyStatus {
   anthropic: boolean;
   openai: boolean;
+  google: boolean;
 }
+
+// Which engine actually produced the audio for a tts:speak call.
+export type TtsEngine = "google" | "openai";
 
 export type IpcChannel =
   | "settings:get"
@@ -139,6 +161,7 @@ export type IpcChannel =
   | "whisper:transcribe"
   | "window:set-opacity"
   | "window:set-ignore-mouse"
+  | "window:set-collapsed"
   | "window:open-external"
   | "app:quit"
   | "overlay:show-glow"

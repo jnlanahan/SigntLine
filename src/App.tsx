@@ -86,6 +86,8 @@ export default function App() {
   const [focused, setFocused]             = useState(false);
   const [showPeek, setShowPeek]           = useState(false);
   const [showStopConfirm, setShowStopConfirm] = useState(false);
+  const [showQuitConfirm, setShowQuitConfirm] = useState(false);
+  const [collapsed, setCollapsed]         = useState(false);
   const [evalResult, setEvalResult]       = useState<{ achieved: boolean; verdict: string } | null>(null);
 
   const rateLimitCountdown = useRateLimitCountdown();
@@ -129,6 +131,24 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [showPeek]);
 
+  // A new instruction means the user kept working — clear any stale
+  // goal-evaluation verdict card.
+  useEffect(() => {
+    setEvalResult(null);
+  }, [instruction]);
+
+  async function toggleCollapsed() {
+    const next = !collapsed;
+    if (next) {
+      // Resize first, then swap the UI, to minimize clipped-content flash.
+      await api().window.setCollapsed(true);
+      setCollapsed(true);
+    } else {
+      setCollapsed(false);
+      await api().window.setCollapsed(false);
+    }
+  }
+
   function startSession(g: string, clarifications: Clarification[] = [], planSteps: string[] = []) {
     if (!keyStatus.anthropic) { setView("settings"); return; }
     const ctx = clarifications
@@ -152,9 +172,8 @@ export default function App() {
   }
   function resume() {
     useSession.getState().setPauseReason(null);
-    useSession.getState().resetIdleCycles();
     useSession.getState().setResearchQuery(null);
-    useSession.getState().setCooldownUntil(null);
+    useSession.getState().setLastClaudeCallAt(null);
     setStatus("watching");
   }
   function stop() {
@@ -187,9 +206,10 @@ export default function App() {
 
   function submitFollowUp(text: string) {
     cancelTts();
+    setEvalResult(null);
     appendTurn({ role: "user", content: text, timestamp: Date.now() });
     useSession.getState().setPendingFollowUp(text);
-    useSession.getState().setCooldownUntil(null);
+    useSession.getState().setLastClaudeCallAt(null);
     if (status === "thinking") return;
     if (
       status === "paused" ||
@@ -216,6 +236,25 @@ export default function App() {
 
   const lastFrame  = frames.length > 0 ? frames[frames.length - 1] : null;
   const showSpinner = status === "thinking" || status === "researching" || status === "clarifying";
+
+  // Collapsed compact bar — all hooks above keep running (capture loop, TTS),
+  // only the UI shrinks.
+  if (collapsed) {
+    return (
+      <PanelShell radius={16}>
+        <CollapsedBar
+          status={status}
+          instruction={instruction}
+          ttsEnabled={settings?.ttsEnabled ?? false}
+          isPaused={status === "paused"}
+          onToggleVoice={toggleVoice}
+          onPause={pause}
+          onResume={resume}
+          onExpand={() => void toggleCollapsed()}
+        />
+      </PanelShell>
+    );
+  }
 
   if (view === "privacy") {
     return (
@@ -248,8 +287,16 @@ export default function App() {
         onToggleVoice={toggleVoice}
         onOpenSettings={openSettings}
         onAdjustCapture={() => { void api().overlay.setAdjust(true); }}
-        onQuit={() => void api().app.quit()}
+        onCollapse={() => void toggleCollapsed()}
+        onQuit={() => setShowQuitConfirm(true)}
       />
+
+      {showQuitConfirm && (
+        <QuitConfirmBanner
+          onConfirm={() => void api().app.quit()}
+          onCancel={() => setShowQuitConfirm(false)}
+        />
+      )}
 
       {/* Peek overlay */}
       {showPeek && lastFrame && (
@@ -308,7 +355,11 @@ export default function App() {
               noun={MODE_META[mode].stepNoun}
             />
             {evalResult && (
-              <EvalResultCard achieved={evalResult.achieved} verdict={evalResult.verdict} />
+              <EvalResultCard
+                achieved={evalResult.achieved}
+                verdict={evalResult.verdict}
+                onDismiss={() => setEvalResult(null)}
+              />
             )}
           </div>
 
@@ -360,7 +411,7 @@ export default function App() {
 
 /* ── Panel shell — full-window glass container ── */
 
-function PanelShell({ children }: { children: React.ReactNode }) {
+function PanelShell({ children, radius = 22 }: { children: React.ReactNode; radius?: number }) {
   const T = useTheme();
   const solidBg = useSettings((s) => s.settings?.solidBackground ?? false);
   return (
@@ -369,7 +420,7 @@ function PanelShell({ children }: { children: React.ReactNode }) {
         position: "relative",
         width: "100vw",
         height: "100vh",
-        borderRadius: 22,
+        borderRadius: radius,
         overflow: "hidden",
         // backdropFilter must NOT be on this element — it breaks -webkit-app-region: drag on Windows/Chromium
         fontFamily: T.font,
@@ -380,7 +431,7 @@ function PanelShell({ children }: { children: React.ReactNode }) {
       <div aria-hidden style={{
         position: "absolute", inset: 0, pointerEvents: "none",
         ...(solidBg ? {
-          background: "rgba(13, 14, 18, 0.97)",
+          background: "rgb(13, 14, 18)",
         } : {
           backdropFilter: "blur(26px) saturate(1.35)",
           WebkitBackdropFilter: "blur(26px) saturate(1.35)",
@@ -388,7 +439,7 @@ function PanelShell({ children }: { children: React.ReactNode }) {
         }),
         border: `1px solid ${T.border}`,
         boxShadow: `0 1px 0 0 ${T.hi} inset, 0 30px 70px -20px rgba(0,0,0,0.7), 0 0 0 1px rgba(0,0,0,0.3)`,
-        borderRadius: 22,
+        borderRadius: radius,
       }} />
       <Glow />
       <div style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", height: "100%" }}>
@@ -400,7 +451,15 @@ function PanelShell({ children }: { children: React.ReactNode }) {
 
 /* ── Evaluation result card ── */
 
-function EvalResultCard({ achieved, verdict }: { achieved: boolean; verdict: string }) {
+function EvalResultCard({
+  achieved,
+  verdict,
+  onDismiss,
+}: {
+  achieved: boolean;
+  verdict: string;
+  onDismiss(): void;
+}) {
   const T = useTheme();
   return (
     <div style={{
@@ -413,12 +472,27 @@ function EvalResultCard({ achieved, verdict }: { achieved: boolean; verdict: str
       <span style={{ fontSize: 16, flexShrink: 0, marginTop: 1 }}>
         {achieved ? "✓" : "✗"}
       </span>
-      <div>
+      <div style={{ flex: 1, minWidth: 0 }}>
         <p style={{ margin: "0 0 3px", fontSize: 11, fontWeight: 700, color: achieved ? "#8FCB66" : "#ef4444", letterSpacing: "0.04em", textTransform: "uppercase" }}>
           {achieved ? "Goal achieved" : "Not quite done"}
         </p>
         <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: T.ink2 }}>{verdict}</p>
       </div>
+      <button
+        type="button"
+        className="no-drag"
+        onClick={onDismiss}
+        title="Dismiss"
+        style={{
+          flexShrink: 0, width: 24, height: 24,
+          display: "grid", placeItems: "center",
+          border: 0, borderRadius: 7,
+          background: "transparent", color: T.ink3,
+          cursor: "pointer",
+        }}
+      >
+        <CloseIcon />
+      </button>
     </div>
   );
 }
@@ -433,6 +507,7 @@ function PanelHeader({
   onToggleVoice,
   onOpenSettings,
   onAdjustCapture,
+  onCollapse,
   onQuit,
 }: {
   status: SessionStatus;
@@ -442,6 +517,7 @@ function PanelHeader({
   onToggleVoice(): void;
   onOpenSettings(): void;
   onAdjustCapture(): void;
+  onCollapse(): void;
   onQuit(): void;
 }) {
   const T = useTheme();
@@ -513,12 +589,42 @@ function PanelHeader({
             <IMonitor />
           </CtrlBtn>
         )}
-        <CtrlBtn title="Settings" onClick={onOpenSettings}>
+        <CtrlBtn title="Collapse to compact bar" onClick={onCollapse}>
+          <ChevronDownIcon />
+        </CtrlBtn>
+
+        {/* Title-bar controls — visually distinct so they're always findable */}
+        <span aria-hidden style={{ width: 1, height: 22, background: lt(0.1), margin: "0 6px", flexShrink: 0 }} />
+        <button
+          type="button"
+          className="no-drag"
+          title="Settings"
+          onClick={onOpenSettings}
+          style={{
+            width: 40, height: 40, flexShrink: 0,
+            display: "grid", placeItems: "center",
+            borderRadius: 11, cursor: "pointer",
+            background: lt(0.06), border: `1px solid ${lt(0.1)}`,
+            color: T.ink,
+          }}
+        >
           <IGear />
-        </CtrlBtn>
-        <CtrlBtn title="Quit" onClick={onQuit} color="#ef4444">
-          <CloseIcon />
-        </CtrlBtn>
+        </button>
+        <button
+          type="button"
+          className="no-drag"
+          title="Quit SightLine"
+          onClick={onQuit}
+          style={{
+            width: 40, height: 40, flexShrink: 0, marginLeft: 4,
+            display: "grid", placeItems: "center",
+            borderRadius: 11, cursor: "pointer",
+            background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.3)",
+            color: "#ef4444",
+          }}
+        >
+          <CloseIcon size={14} />
+        </button>
       </div>
     </div>
   );
@@ -707,6 +813,133 @@ function StopConfirmBanner({ onConfirm, onCancel }: { onConfirm(): void; onCance
   );
 }
 
+/* ── Quit confirmation banner ── */
+
+function QuitConfirmBanner({ onConfirm, onCancel }: { onConfirm(): void; onCancel(): void }) {
+  const T = useTheme();
+  return (
+    <div
+      className="no-drag"
+      style={{
+        display: "flex", alignItems: "center", gap: 10,
+        padding: "10px 14px",
+        borderBottom: `1px solid ${lt(0.07)}`,
+        background: "rgba(239,68,68,0.07)",
+        flexShrink: 0,
+      }}
+    >
+      <span style={{ fontSize: 12, color: T.ink2, flex: 1 }}>
+        Quit SightLine?
+      </span>
+      <button
+        type="button"
+        onClick={onCancel}
+        style={{
+          borderRadius: 8, border: `1px solid ${lt(0.12)}`,
+          background: "transparent", color: T.ink2,
+          fontSize: 11, padding: "5px 12px", cursor: "pointer",
+        }}
+      >
+        Cancel
+      </button>
+      <button
+        type="button"
+        onClick={onConfirm}
+        style={{
+          borderRadius: 8, border: 0,
+          background: "#ef4444", color: "#fff",
+          fontSize: 11, fontWeight: 600, padding: "5px 12px", cursor: "pointer",
+        }}
+      >
+        Quit
+      </button>
+    </div>
+  );
+}
+
+/* ── Collapsed compact bar ── */
+
+function CollapsedBar({
+  status,
+  instruction,
+  ttsEnabled,
+  isPaused,
+  onToggleVoice,
+  onPause,
+  onResume,
+  onExpand,
+}: {
+  status: SessionStatus;
+  instruction: string;
+  ttsEnabled: boolean;
+  isPaused: boolean;
+  onToggleVoice(): void;
+  onPause(): void;
+  onResume(): void;
+  onExpand(): void;
+}) {
+  const T = useTheme();
+  const dotColor = STATUS_DOT[status];
+  const pulses   = status === "watching" || status === "thinking";
+
+  return (
+    <div
+      className="drag-region"
+      style={{
+        display: "flex", alignItems: "center", gap: 10,
+        height: "100%", padding: "0 10px 0 14px",
+      }}
+    >
+      {/* Status dot */}
+      <span style={{ position: "relative", display: "inline-flex", width: 8, height: 8, flexShrink: 0 }}>
+        <span style={{ position: "absolute", inset: 0, borderRadius: "50%", background: dotColor }} />
+        {pulses && (
+          <span style={{
+            position: "absolute", inset: -3, borderRadius: "50%",
+            background: dotColor, opacity: 0.3,
+            animation: "sl-live-pulse 1.5s ease-out infinite",
+          }} />
+        )}
+      </span>
+
+      {/* Current instruction, one line */}
+      <span style={{
+        flex: 1, minWidth: 0, fontSize: 12, color: T.ink2,
+        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+      }}>
+        {instruction || STATUS_TEXT[status]}
+      </span>
+
+      <div className="no-drag" style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 0 }}>
+        <CtrlBtn
+          title={ttsEnabled ? "Voice on — click to mute" : "Voice off — click to enable"}
+          onClick={onToggleVoice}
+          color={ttsEnabled ? T.accent : undefined}
+        >
+          <IMic c={ttsEnabled ? T.accent : "currentColor"} />
+        </CtrlBtn>
+        <button
+          className="no-drag"
+          onClick={isPaused ? onResume : onPause}
+          title={isPaused ? "Resume" : "Pause"}
+          style={{
+            width: 30, height: 30, border: 0, borderRadius: 9, cursor: "pointer",
+            background: `linear-gradient(180deg, ${T.accent}, ${T.accentDeep})`,
+            color: T.onAccent,
+            display: "grid", placeItems: "center",
+            flexShrink: 0,
+          }}
+        >
+          {isPaused ? <PlayIcon c={T.onAccent} /> : <IPause c={T.onAccent} />}
+        </button>
+        <CtrlBtn title="Expand" onClick={onExpand}>
+          <ChevronUpIcon />
+        </CtrlBtn>
+      </div>
+    </div>
+  );
+}
+
 /* ── Context panel (files + agent notes) ── */
 
 function ContextPanel({
@@ -853,10 +1086,26 @@ function CropIcon() {
   );
 }
 
-function CloseIcon() {
+function CloseIcon({ size = 10 }: { size?: number }) {
   return (
-    <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+    <svg width={size} height={size} viewBox="0 0 10 10" fill="none">
       <path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+      <path d="M2 4l4 4 4-4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function ChevronUpIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+      <path d="M2 8l4-4 4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }

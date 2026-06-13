@@ -12,6 +12,7 @@ import type {
   InstructionResponse,
   SessionPlan,
   Settings,
+  TtsEngine,
   TtsVoiceId,
   UploadedContext,
 } from "./types";
@@ -46,6 +47,9 @@ export interface SightLineApi {
       clarificationContext?: string;
       uploadedContext?: string;
       agentNotes?: string[];
+      secondsSinceScreenChange?: number;
+      secondsSinceLastSpoke?: number;
+      stalled?: boolean;
     }): Promise<
       | InstructionResponse
       | { __error: "missing_api_key" }
@@ -78,6 +82,7 @@ export interface SightLineApi {
   window: {
     setOpacity(opacity: number): Promise<void>;
     setIgnoreMouse(ignore: boolean): Promise<void>;
+    setCollapsed(collapsed: boolean): Promise<void>;
     openExternal(url: string): Promise<void>;
   };
   tts: {
@@ -85,7 +90,7 @@ export interface SightLineApi {
       text: string,
       voice?: TtsVoiceId,
     ): Promise<
-      | { audioBase64: string }
+      | { audioBase64: string; engine: TtsEngine }
       | { __error: "missing_openai_key" }
       | { __error: "request_failed"; message: string }
     >;
@@ -149,6 +154,8 @@ const api: SightLineApi = {
       ipcRenderer.invoke("window:set-opacity", { opacity }),
     setIgnoreMouse: (ignore) =>
       ipcRenderer.invoke("window:set-ignore-mouse", { ignore }),
+    setCollapsed: (collapsed) =>
+      ipcRenderer.invoke("window:set-collapsed", { collapsed }),
     openExternal: (url) =>
       ipcRenderer.invoke("window:open-external", { url }),
   },

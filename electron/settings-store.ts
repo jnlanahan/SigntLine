@@ -5,7 +5,7 @@ import type { Settings } from "./types";
 
 const DEFAULTS: Settings = {
   captureIntervalSec: 5,
-  opacity: 0.92,
+  opacity: 1,
   selectedDisplayId: null,
   captureRegion: null,
   hasSeenPrivacyNotice: false,
@@ -13,7 +13,8 @@ const DEFAULTS: Settings = {
   ttsVoice: "nova",
   accentColor: "lime",
   windowBounds: null,
-  solidBackground: false,
+  solidBackground: true,
+  uiOpaqueMigration: false,
 };
 
 function settingsPath(): string {

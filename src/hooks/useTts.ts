@@ -1,5 +1,6 @@
 import { api } from "../lib/api";
 import { useSettings } from "../store/settings";
+import { useSession } from "../store/session";
 
 // Spoken when the user has been idle for a while with no screen change.
 export const WAITING_PHRASES = [
@@ -47,27 +48,43 @@ export function randomCompletionPhrase(): string {
 // Module-level audio state so cancel() works across renders.
 let currentAudio: HTMLAudioElement | null = null;
 let speakGeneration = 0;
-let lastTtsMode: "openai" | "system" | "none" | null = null;
+// True from speak() until the audio definitively ends (including the 1-2s
+// cloud-synthesis fetch, when no audio element exists yet) — so callers
+// checking isSpeaking() can't fire a tick that cancels still-loading audio.
+let pendingSpeech = false;
+type TtsMode = "google" | "openai" | "system" | "none" | null;
+let lastTtsMode: TtsMode = null;
+
+function recordTtsMode(mode: TtsMode) {
+  lastTtsMode = mode;
+  useSession.getState().setLastTtsEngine(mode);
+}
 
 // Speech completion tracking — lets the session loop wait for audio to finish
 // before scheduling the next tick, preventing mid-sentence cutoffs.
 let speakDoneResolve: (() => void) | null = null;
 let speakDonePromise: Promise<void> = Promise.resolve();
 
-export function waitForSpeechEnd(): Promise<void> {
-  return speakDonePromise;
+export function waitForSpeechEnd(maxWaitMs = 30_000): Promise<void> {
+  // Safety net: never let a caller hang forever on a speech promise that a
+  // future bug fails to resolve.
+  return Promise.race([
+    speakDonePromise,
+    new Promise<void>((resolve) => setTimeout(resolve, maxWaitMs)),
+  ]);
 }
 
-export function getTtsMode(): "openai" | "system" | "none" | null {
+export function getTtsMode(): TtsMode {
   return lastTtsMode;
 }
 
 export function isSpeaking(): boolean {
-  return currentAudio !== null;
+  return pendingSpeech;
 }
 
 function cancelCurrent() {
   speakGeneration++;
+  pendingSpeech = false;
   speakDoneResolve?.(); // speech is done (cancelled) — unblock any waiters
   speakDoneResolve = null;
   if (currentAudio) {
@@ -78,14 +95,14 @@ function cancelCurrent() {
   if (typeof window !== "undefined") window.speechSynthesis?.cancel();
 }
 
-async function playOpenAI(text: string, gen: number): Promise<boolean> {
+async function playCloud(text: string, gen: number): Promise<boolean> {
   try {
     const voice = useSettings.getState().settings?.ttsVoice;
     const result = await api().tts.speak(text, voice);
     if (gen !== speakGeneration) return true; // cancelled while waiting
     if ("__error" in result) {
       const msg = (result as { message?: string }).message ?? "";
-      console.warn("[SightLine TTS] OpenAI error:", result.__error, msg);
+      console.warn("[SightLine TTS] cloud TTS error:", result.__error, msg);
       return false;
     }
 
@@ -98,20 +115,34 @@ async function playOpenAI(text: string, gen: number): Promise<boolean> {
       return true; // cancelled after IPC returned
     }
     currentAudio = audio;
-    audio.onended = () => {
+
+    // Shared end-of-life cleanup for ended/error/abort, so a failed audio
+    // element can never leave isSpeaking() stuck true or the session loop
+    // hanging on waitForSpeechEnd().
+    const finish = (reason: string) => {
       URL.revokeObjectURL(blobUrl);
       if (currentAudio === audio) currentAudio = null;
       // Only resolve if this is still the active speech (gen guard prevents
-      // a stale onended from resolving a newer instruction's promise).
+      // a stale event from resolving a newer instruction's promise).
       if (gen === speakGeneration) {
+        pendingSpeech = false;
         speakDoneResolve?.();
         speakDoneResolve = null;
+        if (reason !== "ended") {
+          console.warn(`[SightLine TTS] audio ${reason} (gen ${gen})`);
+          api().log(`[tts] audio ${reason} (gen ${gen})`);
+        } else {
+          api().log(`[tts] audio ended (gen ${gen})`);
+        }
       }
     };
+    audio.onended = () => finish("ended");
+    audio.onerror = () => finish("error");
+    audio.onabort = () => finish("abort");
 
     try {
       await audio.play();
-      lastTtsMode = "openai";
+      recordTtsMode(result.engine);
       return true;
     } catch (playErr) {
       // Autoplay blocked or decode error — fall through to Web Speech.
@@ -120,7 +151,7 @@ async function playOpenAI(text: string, gen: number): Promise<boolean> {
       return false;
     }
   } catch (err) {
-    console.warn("[SightLine TTS] OpenAI TTS failed:", err);
+    console.warn("[SightLine TTS] cloud TTS failed:", err);
     return false;
   }
 }
@@ -131,7 +162,7 @@ function playWebSpeech(text: string) {
     return;
   }
   console.warn(
-    "[SightLine TTS] Using system speech synthesis. Add an OpenAI API key in Settings for the natural voice.",
+    "[SightLine TTS] Using system speech synthesis. Check your Google/OpenAI keys and network for the natural voice.",
   );
 
   const utt = new SpeechSynthesisUtterance(text);
@@ -148,7 +179,7 @@ function playWebSpeech(text: string) {
     );
   }
 
-  lastTtsMode = "system";
+  recordTtsMode("system");
   const voices = window.speechSynthesis.getVoices();
   if (voices.length > 0) {
     const v = pickVoice(voices);
@@ -185,26 +216,31 @@ export function useTts() {
     const trimmed = preprocessForTts(text.trim());
     if (!trimmed) return;
     cancelCurrent(); // resolves previous promise, increments generation
+    pendingSpeech = true; // covers the cloud-synthesis fetch window too
     // Create new completion promise for this speech instance.
     speakDonePromise = new Promise<void>((resolve) => {
       speakDoneResolve = resolve;
     });
     lastTtsMode = null;
     const gen = speakGeneration;
+    api().log(`[tts] speak start (gen ${gen}): "${trimmed.slice(0, 40)}"`);
 
-    void playOpenAI(trimmed, gen).then((used) => {
+    void playCloud(trimmed, gen).then((used) => {
       if (!used && gen === speakGeneration) {
+        api().log(`[tts] falling back to web speech (gen ${gen})`);
         playWebSpeech(trimmed);
         // Web Speech has no reliable end event — resolve immediately so the
         // session loop isn't stuck waiting indefinitely.
+        pendingSpeech = false;
         speakDoneResolve?.();
         speakDoneResolve = null;
       } else if (!used) {
-        lastTtsMode = "none";
+        recordTtsMode("none");
+        pendingSpeech = false;
         speakDoneResolve?.();
         speakDoneResolve = null;
       }
-      // If used=true: audio is playing; onended will resolve the promise.
+      // If used=true: audio is playing; finish() will resolve the promise.
       // If gen !== speakGeneration: cancelCurrent() already resolved it.
     });
   }

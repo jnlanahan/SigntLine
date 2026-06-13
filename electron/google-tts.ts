@@ -1,16 +1,18 @@
 import textToSpeech from "@google-cloud/text-to-speech";
 
-// Studio voices sound the most human — map our voice IDs to them.
+// Chirp 3 HD voices — Google's newest, most natural generation (NotebookLM-style).
 const VOICE_MAP: Record<string, string> = {
-  nova: "en-US-Studio-O",
-  shimmer: "en-US-Studio-O",
-  coral: "en-US-Studio-O",
-  fable: "en-US-Studio-O",
-  sage: "en-US-Studio-Q",
-  alloy: "en-US-Studio-Q",
-  echo: "en-US-Studio-Q",
-  onyx: "en-US-Studio-Q",
+  nova: "en-US-Chirp3-HD-Aoede",
+  coral: "en-US-Chirp3-HD-Aoede",
+  shimmer: "en-US-Chirp3-HD-Leda",
+  fable: "en-US-Chirp3-HD-Leda",
+  onyx: "en-US-Chirp3-HD-Charon",
+  alloy: "en-US-Chirp3-HD-Charon",
+  echo: "en-US-Chirp3-HD-Puck",
+  sage: "en-US-Chirp3-HD-Puck",
 };
+
+const DEFAULT_VOICE = "en-US-Chirp3-HD-Aoede";
 
 export function hasGoogleCredentials(): boolean {
   return !!(
@@ -20,10 +22,12 @@ export function hasGoogleCredentials(): boolean {
   );
 }
 
-export async function speakTextGoogle(
-  text: string,
-  voice?: string,
-): Promise<Buffer> {
+// Lazy singleton — constructing the client per call adds connection setup
+// latency to every utterance.
+let client: InstanceType<typeof textToSpeech.TextToSpeechClient> | null = null;
+
+function getClient() {
+  if (client) return client;
   const clientEmail = process.env.GOOGLE_CLIENT_EMAIL;
   const privateKey = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, "\n");
   const projectId = process.env.GOOGLE_PROJECT_ID;
@@ -32,25 +36,26 @@ export async function speakTextGoogle(
     throw new Error("missing_google_credentials");
   }
 
-  const client = new textToSpeech.TextToSpeechClient({
+  client = new textToSpeech.TextToSpeechClient({
     credentials: { client_email: clientEmail, private_key: privateKey },
     projectId,
   });
+  return client;
+}
 
-  const voiceName = (voice && VOICE_MAP[voice]) ? VOICE_MAP[voice] : "en-US-Studio-O";
+export async function speakTextGoogle(
+  text: string,
+  voice?: string,
+): Promise<Buffer> {
+  const voiceName = (voice && VOICE_MAP[voice]) ? VOICE_MAP[voice] : DEFAULT_VOICE;
 
-  // Wrap in SSML so the Studio voice adds natural pauses after sentences and commas.
-  const ssml = `<speak>${text
-    .replace(/([.!?])\s+/g, '$1<break time="250ms"/> ')
-    .replace(/,\s+/g, ',<break time="100ms"/> ')}</speak>`;
-
-  const [response] = await client.synthesizeSpeech({
-    input: { ssml },
+  // Chirp 3 HD voices reject SSML — plain text only; their prosody is native.
+  const [response] = await getClient().synthesizeSpeech({
+    input: { text },
     voice: { languageCode: "en-US", name: voiceName },
     audioConfig: {
       audioEncoding: "MP3" as const,
       speakingRate: 1.0,
-      volumeGainDb: 2.0,
     },
   });
 

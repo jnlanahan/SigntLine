@@ -80,7 +80,13 @@
       "PowerShell(Get-Process -Id 47260, 16888 -ErrorAction SilentlyContinue)",
       "PowerShell(Stop-Process -Id 47260 -Force -ErrorAction SilentlyContinue)",
       "PowerShell(Stop-Process -Id 16888 -Force -ErrorAction SilentlyContinue)",
-      "Bash(echo \"started, PID=$!\")"
+      "Bash(echo \"started, PID=$!\")",
+      "Skill(run)",
+      "Skill(run:*)",
+      "Bash(echo \"Started PID $!\")",
+      "PowerShell(npm run lint)",
+      "PowerShell(npm run build)",
+      "PowerShell(npm run dev)"
     ]
   }
 }

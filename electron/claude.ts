@@ -17,11 +17,19 @@ const MAX_FRAMES = 5;
 
 // Per-mode role intros. The voice + output rules are shared so the rest of the
 // streaming/parsing pipeline is identical across modes.
-const TECH_SUPPORT_INTRO = `You are a sharp, energetic coach helping the user through a task in real time — like a knowledgeable friend who's a little bit sassy but always on your side. You can see the user's screen. Walk them through whatever they're trying to do, one concrete step at a time.
+const TECH_SUPPORT_INTRO = `You are a sharp, warm coach helping the user through a task in real time — like a knowledgeable friend sitting next to them. You can see the user's screen. Walk them through whatever they're trying to do, one concrete step at a time.
 
-Pace yourself. Give one instruction, then be quiet and wait. The app is watching the screen — you don't need to front-load multiple steps in one message.
+You'll be shown the screen every few seconds. Most of the time the right move is to say NOTHING. Pick exactly one "action" each turn:
 
-In this mode "completed_steps" is the running list of steps the user has already done, and "done" is true only when their stated goal is fully achieved.`;
+- "instruct" — the user finished the previous step (or is clearly stuck on it) and needs the next one. Give one concrete step. If they just completed something, fold a quick 2-4 word acknowledgment into the front: "Nice, that's in. Now click…"
+- "wait" — the user is mid-step: typing, scrolling, reading, a page loading, partial progress visible. Say nothing. This should be your most common action. Choosing wait is good coaching, not laziness.
+- "acknowledge" — the user made real progress but doesn't need direction yet (working through a long form, waiting on a download). One short warm line, max ~8 words: "Perfect, keep going." Use sparingly — at most once between instructions.
+- "check_in" — the context tells you the screen has been still a long time and you haven't spoken recently. Ask one friendly question: "How's it going — did that install finish?" Never check in twice in a row without a reply.
+- "done" — the stated goal is visibly, fully achieved. Give a short warm wrap-up. If the latest screenshot already shows the goal achieved, choose done — don't ask the user to confirm.
+
+With every "instruct", also set "expected_pace": how long this step should take a careful beginner — "quick" (a click or two), "medium" (a short form, a search), or "long" (an install, a download, something to read).
+
+In this mode "completed_steps" is the running list of steps the user has already done. Never repeat the same instruction in the same words — if the screen hasn't changed since your last instruction, either wait or give one NEW smaller hint.`;
 
 const TRAINING_INTRO = `You are a silent observer and collaborative training-plan builder. Your job is to help the user document a workflow they already know — by watching them demonstrate it on screen — and turn it into a clear, step-by-step training plan.
 
@@ -60,22 +68,34 @@ const VOICE_RULES = `Voice rules (spoken text comes through TTS, so prefer short
 - Vary your openers. Mix: "Okay, go ahead and…", "Cool — next up…", "Alright, now…", "Nice. Then…", "From here, just…", "Quick one —", "Easy part:", "Go ahead and…". Never repeat the same opener twice in a row.
 - NEVER say "let me know when you're done" or "give me a thumbs up" or "tell me when you've finished" — the app is actively watching the screen and will pick it up automatically.
 - If the screen looks the same as before, give one small extra hint or ask a specific clarifying question. Don't repeat yourself verbatim.
+- Be concrete and specific. Name exact URLs ("go to claude.ai"), exact menu paths ("Settings → Privacy → Camera"), and exact button labels as they appear on screen. Never assume the user knows where something is, what it's called, or which site to visit.
 - If you need info to move forward (e.g., which account, which source, who the training is for), ask a quick specific question. Don't guess and barrel ahead.
 - If the user asked a follow-up, answer it directly and conversationally, then guide the next step.
 - Never narrate what just happened on screen ("the pop-up closed", "the page loaded", "the dialog appeared") — just give the next thing directly.
 - Subtle personality is good — a dry observation, a small joke, light sarcasm ("Classic. Let's fix that.") — but keep it brief and never mean.`;
 
+const SHARED_FIELD_RULES = `- "completed_steps" is the full running list as short phrases (3-7 words each), per the mode rules above. Never duplicate.
+- "upcoming_steps" is an array of 2-4 predicted next steps after the current one (short phrases, 3-7 words each). Update this list as the plan evolves. Use an empty array in the final stretch or when steps are unclear.
+- "digression" is true ONLY when the screen clearly shows the user has navigated away from the task to something unrelated (social media, personal browsing, a completely different app). Do NOT set true for normal task navigation (switching browsers, opening a referenced file, checking docs). When digression is true, set instruction to a short warm pause message like "No worries — take your time. I'll be right here when you're ready." and set upcoming_steps to [].
+- "needsResearch" is true ONLY when you are genuinely blocked by lack of current documentation or external information you cannot infer from the screen. Set false otherwise.
+- "researchQuery" is a precise web search query string when needsResearch is true, otherwise empty string.
+- "notes" is your private scratchpad memory. Record durable facts worth remembering across steps — research findings, the user's specific setup (account, version, folder), or decisions made. Keep each note to one short line. These notes are shown back to you on future turns. Use an empty string when there is nothing new to record; never repeat a note you already wrote.`;
+
 const OUTPUT_RULES = `Output rules:
 - Respond with a JSON object only, no prose around it, no code fences.
 - Schema: {"instruction": string, "completed_steps": string[], "upcoming_steps": string[], "digression": boolean, "done": boolean, "needsResearch": boolean, "researchQuery": string, "notes": string}
 - "instruction" is your next message to the user — conversational tone, under 80 words.
-- "completed_steps" is the full running list as short phrases (3-7 words each), per the mode rules above. Never duplicate.
-- "upcoming_steps" is an array of 2-4 predicted next steps after the current one (short phrases, 3-7 words each). Update this list as the plan evolves. Use an empty array in the final stretch or when steps are unclear.
-- "digression" is true ONLY when the screen clearly shows the user has navigated away from the task to something unrelated (social media, personal browsing, a completely different app). Do NOT set true for normal task navigation (switching browsers, opening a referenced file, checking docs). When digression is true, set instruction to a short warm pause message like "No worries — take your time. I'll be right here when you're ready." and set upcoming_steps to [].
 - "done" follows the mode rules above; write a short, punchy wrap-up when done and give no further steps.
-- "needsResearch" is true ONLY when you are genuinely blocked by lack of current documentation or external information you cannot infer from the screen. Set false otherwise.
-- "researchQuery" is a precise web search query string when needsResearch is true, otherwise empty string.
-- "notes" is your private scratchpad memory. Record durable facts worth remembering across steps — research findings, the user's specific setup (account, version, folder), or decisions made. Keep each note to one short line. These notes are shown back to you on future turns. Use an empty string when there is nothing new to record; never repeat a note you already wrote.`;
+${SHARED_FIELD_RULES}`;
+
+const TECH_SUPPORT_OUTPUT_RULES = `Output rules:
+- Respond with a JSON object only, no prose around it, no code fences.
+- Schema: {"action": "instruct"|"wait"|"acknowledge"|"check_in"|"done", "expected_pace": "quick"|"medium"|"long", "instruction": string, "completed_steps": string[], "upcoming_steps": string[], "digression": boolean, "needsResearch": boolean, "researchQuery": string, "notes": string}
+- Output the "action" key FIRST, before everything else.
+- "action" is your pacing decision per the mode rules above. When action is "wait", set instruction to an empty string.
+- "expected_pace" applies to the step you're giving in an "instruct" — "medium" otherwise.
+- "instruction" is your next message to the user — conversational tone, under 80 words. Empty string when action is "wait".
+${SHARED_FIELD_RULES}`;
 
 const MODE_INTROS: Record<AppMode, string> = {
   tech_support: TECH_SUPPORT_INTRO,
@@ -84,7 +104,9 @@ const MODE_INTROS: Record<AppMode, string> = {
 };
 
 function systemPromptFor(mode: AppMode): string {
-  return `${MODE_INTROS[mode]}\n\n${VOICE_RULES}\n\n${OUTPUT_RULES}`;
+  const outputRules =
+    mode === "tech_support" ? TECH_SUPPORT_OUTPUT_RULES : OUTPUT_RULES;
+  return `${MODE_INTROS[mode]}\n\n${VOICE_RULES}\n\n${outputRules}`;
 }
 
 export class MissingApiKeyError extends Error {
@@ -115,6 +137,12 @@ export interface NextInstructionArgs {
   uploadedContext?: string;
   // Notes the agent recorded on previous turns, oldest to newest.
   agentNotes?: string[];
+  // Pacing context (tech_support): how long since the screen last changed
+  // and since the assistant last spoke, plus whether the loop considers the
+  // user stalled on the current step.
+  secondsSinceScreenChange?: number;
+  secondsSinceLastSpoke?: number;
+  stalled?: boolean;
 }
 
 export async function getNextInstruction(
@@ -167,8 +195,11 @@ export async function getNextInstruction(
     { role: "user", content: userBlocks },
   ];
 
-  // Regex to capture the instruction field value as it accumulates in the stream.
+  // Regexes to capture fields as they accumulate in the stream. "action" is
+  // emitted first (per the output rules) so we can gate early TTS on it —
+  // a "wait" must never speak.
   const instructionRe = /"instruction"\s*:\s*"((?:[^"\\]|\\.)*)"/;
+  const actionRe = /"action"\s*:\s*"(\w+)"/;
   let earlyFired = false;
 
   try {
@@ -190,9 +221,13 @@ export async function getNextInstruction(
           const m = instructionRe.exec(accumulated);
           if (m) {
             earlyFired = true;
+            const actionMatch = actionRe.exec(accumulated);
+            const earlyAction = actionMatch?.[1];
             // Unescape JSON string escapes in the captured value.
             const early = m[1].replace(/\\n/g, " ").replace(/\\(.)/g, "$1");
-            onInstructionReady(early);
+            if (earlyAction !== "wait" && early.trim().length > 0) {
+              onInstructionReady(early);
+            }
           }
         }
       }
@@ -215,7 +250,7 @@ export async function getNextInstruction(
 }
 
 const NEXT_TURN_PROMPT: Record<AppMode, string> = {
-  tech_support: `Give the next instruction (1-3 steps if they're quick and sequential) in JSON.`,
+  tech_support: `Look at the latest screenshot, decide your action per the pacing rules, and respond in JSON.`,
   training: `Look at the latest screenshot. If a step has clearly been completed that isn't in the plan yet, confirm it as a new plan item and ask what comes next. If nothing new is visible, ask a brief scoping question or stay silent (set instruction to an empty string if there is truly nothing to add). Never instruct the user on how to do something. Respond in JSON.`,
   teacher: `Respond to the user's follow-up message. Teach the next concept or answer their question directly and conversationally. If recommending external resources (videos, articles, docs, courses), set needsResearch=true with a precise search query. Respond in JSON.`,
 };
@@ -251,6 +286,24 @@ function buildContextHeader(args: NextInstructionArgs, frameCount: number): stri
         `If the latest screenshot shows the user has NOT acted on it yet, do not repeat the same sentence — either give a small additional hint or ask a brief clarifying question instead.`,
     );
   }
+  if (
+    args.secondsSinceScreenChange !== undefined ||
+    args.secondsSinceLastSpoke !== undefined
+  ) {
+    const timing: string[] = [];
+    if (args.secondsSinceScreenChange !== undefined) {
+      timing.push(`screen last changed ${args.secondsSinceScreenChange}s ago`);
+    }
+    if (args.secondsSinceLastSpoke !== undefined) {
+      timing.push(`you last spoke ${args.secondsSinceLastSpoke}s ago`);
+    }
+    parts.push(`Timing: ${timing.join("; ")}.`);
+  }
+  if (args.stalled) {
+    parts.push(
+      `The screen has been still for a while. The user may be working slowly, reading, or stuck. Choose check_in if you haven't spoken recently, otherwise wait.`,
+    );
+  }
   parts.push(NEXT_TURN_PROMPT[args.mode]);
   return parts.join("\n\n");
 }
@@ -279,6 +332,9 @@ function stripDataUrlPrefix(dataUrl: string): string {
   return comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
 }
 
+const VALID_ACTIONS = new Set(["instruct", "wait", "acknowledge", "check_in", "done"]);
+const VALID_PACES = new Set(["quick", "medium", "long"]);
+
 function parseInstruction(
   text: string,
   previousSteps: string[],
@@ -287,6 +343,8 @@ function parseInstruction(
   if (json) {
     try {
       const obj = JSON.parse(json) as {
+        action?: string;
+        expected_pace?: string;
         instruction?: string;
         completed_steps?: string[];
         upcoming_steps?: string[];
@@ -296,8 +354,22 @@ function parseInstruction(
         researchQuery?: string;
         notes?: string;
       };
+      // Modes that don't emit an action (training/teacher) default to
+      // "instruct"/"done" so their behavior is unchanged.
+      const action =
+        obj.action && VALID_ACTIONS.has(obj.action)
+          ? (obj.action as InstructionResponse["action"])
+          : obj.done
+            ? "done"
+            : "instruct";
+      const instruction = (obj.instruction ?? "").trim();
       return {
-        instruction: (obj.instruction ?? "").trim() || text,
+        action,
+        expectedPace:
+          obj.expected_pace && VALID_PACES.has(obj.expected_pace)
+            ? (obj.expected_pace as InstructionResponse["expectedPace"])
+            : "medium",
+        instruction: action === "wait" ? instruction : instruction || text,
         completedSteps: Array.isArray(obj.completed_steps)
           ? obj.completed_steps.map(String)
           : previousSteps,
@@ -305,7 +377,7 @@ function parseInstruction(
           ? obj.upcoming_steps.map(String)
           : [],
         digression: Boolean(obj.digression),
-        done: Boolean(obj.done),
+        done: action === "done" || Boolean(obj.done),
         needsResearch: Boolean(obj.needsResearch),
         researchQuery: (obj.researchQuery ?? "").trim(),
         notes: (obj.notes ?? "").trim(),
@@ -316,6 +388,8 @@ function parseInstruction(
   }
   // Fallback: treat whole response as the instruction.
   return {
+    action: "instruct",
+    expectedPace: "medium",
     instruction: text || "Continue with the next step.",
     completedSteps: previousSteps,
     upcomingSteps: [],

@@ -1,4 +1,5 @@
 import { desktopCapturer, screen } from "electron";
+import type { Display, DesktopCapturerSource } from "electron";
 import type { CaptureFrame, CaptureRegion, DisplayInfo } from "./types";
 
 // Largest dimension we keep for the final vision payload. Cropping happens at
@@ -42,9 +43,7 @@ export async function captureFrame(
     fetchWindowIcons: false,
   });
 
-  // Match by display_id when available; fall back to first source.
-  const match =
-    sources.find((s) => s.display_id === String(target.id)) ?? sources[0];
+  const match = matchSource(sources, target);
   if (!match) {
     throw new Error("No screen capture source available");
   }
@@ -85,6 +84,79 @@ export async function captureFrame(
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+// On Windows, desktopCapturer's source.display_id often doesn't equal the
+// screen module's display.id (different format, sometimes empty), so a plain
+// display_id match silently captures the wrong monitor. Try a ladder of
+// strategies and log which one matched so failures are never silent.
+let lastMatchLog = "";
+
+function matchSource(
+  sources: DesktopCapturerSource[],
+  target: Display,
+): DesktopCapturerSource | undefined {
+  let source: DesktopCapturerSource | undefined;
+  let strategy = "";
+
+  // 1. Exact display_id match — correct when the platform provides it.
+  source = sources.find((s) => s.display_id === String(target.id));
+  if (source) strategy = "display_id";
+
+  // 2. Single source — trivially correct on single-monitor setups.
+  if (!source && sources.length === 1) {
+    source = sources[0];
+    strategy = "single";
+  }
+
+  // 3. Index alignment: desktopCapturer screen sources are enumerated in the
+  //    same order as screen.getAllDisplays() in practice (not contractual —
+  //    hence gated on equal counts and ranked below display_id).
+  if (!source) {
+    const all = screen.getAllDisplays();
+    const idx = all.findIndex((d) => d.id === target.id);
+    if (idx >= 0 && idx < sources.length && sources.length === all.length) {
+      source = sources[idx];
+      strategy = "index";
+    }
+  }
+
+  // 4. Aspect-ratio match: thumbnails preserve the source display's aspect,
+  //    so the closest aspect wins — but only when it's a unique best match.
+  if (!source) {
+    const targetAspect = target.size.width / target.size.height;
+    const ranked = sources
+      .map((s) => {
+        const ts = s.thumbnail.getSize();
+        const aspect = ts.height > 0 ? ts.width / ts.height : 0;
+        return { s, diff: Math.abs(aspect - targetAspect) };
+      })
+      .sort((a, b) => a.diff - b.diff);
+    if (ranked.length > 1 && ranked[1].diff - ranked[0].diff > 0.01) {
+      source = ranked[0].s;
+      strategy = "aspect";
+    }
+  }
+
+  // 5. Last resort — first source, loudly.
+  if (!source) {
+    source = sources[0];
+    strategy = "first-source-fallback";
+  }
+
+  const logLine =
+    `[capture] display=${target.id} matched via ${strategy} ` +
+    `(source.display_id="${source?.display_id ?? ""}", ` +
+    `source.name="${source?.name ?? ""}", sources=${sources.length})`;
+  if (logLine !== lastMatchLog) {
+    lastMatchLog = logLine;
+    if (strategy === "first-source-fallback") {
+      console.warn(logLine + " — could not identify the selected monitor!");
+    } else {
+      console.log(logLine);
+    }
+  }
+  return source;
 }
 
 function pickDisplay(selectedId: string | null) {

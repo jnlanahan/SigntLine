@@ -26,14 +26,10 @@ function secToTier(sec: number): number {
 }
 
 const VOICE_OPTIONS: { id: TtsVoiceId; label: string; sample: string }[] = [
-  { id: "nova",    label: "Nova — warm, friendly (default)", sample: "Hey, I'm Nova. Ready when you are." },
-  { id: "shimmer", label: "Shimmer — bright, upbeat",        sample: "Hi there — let's get this going!" },
-  { id: "sage",    label: "Sage — calm, thoughtful",         sample: "Okay, take your time. I'm right here with you." },
-  { id: "coral",   label: "Coral — warm, expressive",        sample: "Alright, let's walk through this together." },
-  { id: "alloy",   label: "Alloy — neutral, clear",          sample: "Hello. I'll guide you through the next step." },
-  { id: "echo",    label: "Echo — soft, balanced",           sample: "Hey, let me know when you're ready to go." },
-  { id: "fable",   label: "Fable — gentle, narrative",       sample: "Once you're set, we'll begin." },
-  { id: "onyx",    label: "Onyx — deeper, steady",           sample: "Alright. Let's take it one step at a time." },
+  { id: "nova",    label: "Ava — natural female (recommended)", sample: "Hey, I'm Ava. Ready when you are." },
+  { id: "shimmer", label: "Leda — natural female",              sample: "Hi there — let's walk through this together." },
+  { id: "onyx",    label: "Charlie — natural male (recommended)", sample: "Alright. Let's take it one step at a time." },
+  { id: "echo",    label: "Puck — natural male",                sample: "Hey, let me know when you're ready to go." },
 ];
 
 interface Props {
@@ -301,7 +297,13 @@ export function Settings({ onClose }: Props) {
           <ToggleRow
             T={T}
             label="Read instructions aloud"
-            hint={keyStatus.openai ? "Using OpenAI voice" : "Using system voice"}
+            hint={
+              keyStatus.google
+                ? "Using Google natural voice"
+                : keyStatus.openai
+                  ? "Using OpenAI voice"
+                  : "Using system voice"
+            }
             checked={settings.ttsEnabled}
             onChange={(v) => patch({ ttsEnabled: v })}
             accentRGB={T.accentRGB}
@@ -313,7 +315,7 @@ export function Settings({ onClose }: Props) {
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <span style={sectionLabel}>Voice</span>
           <VoicePicker
-            disabled={!settings.ttsEnabled || !keyStatus.openai}
+            disabled={!settings.ttsEnabled || (!keyStatus.openai && !keyStatus.google)}
             selectStyle={selectStyle}
             ghostBtnStyle={ghostBtnStyle}
           />
@@ -399,7 +401,7 @@ function VoicePicker({
   const { speak } = useTts();
   const T = useTheme();
   const [previewResult, setPreviewResult] = useState<
-    "openai" | "system" | "none" | "pending" | null
+    "google" | "openai" | "system" | "none" | "pending" | null
   >(null);
 
   if (!settings) return null;
@@ -442,11 +444,14 @@ function VoicePicker({
       {previewResult === "pending" && (
         <p style={{ fontSize: 10, color: T.ink3, margin: 0 }}>Testing…</p>
       )}
+      {previewResult === "google" && (
+        <p style={{ fontSize: 10, color: "#8FCB66", margin: 0 }}>✓ Natural voice (Google Chirp 3) — working</p>
+      )}
       {previewResult === "openai" && (
-        <p style={{ fontSize: 10, color: "#8FCB66", margin: 0 }}>✓ Natural voice (OpenAI) — working</p>
+        <p style={{ fontSize: 10, color: "#8FCB66", margin: 0 }}>✓ Natural voice (OpenAI backup) — working</p>
       )}
       {previewResult === "system" && (
-        <p style={{ fontSize: 10, color: "#f59e0b", margin: 0 }}>⚠ System voice only — add your OpenAI key for natural voice</p>
+        <p style={{ fontSize: 10, color: "#f59e0b", margin: 0 }}>⚠ System voice only — check your Google or OpenAI key</p>
       )}
       {previewResult === "none" && (
         <p style={{ fontSize: 10, color: "#ef4444", margin: 0 }}>✗ No audio — check audio permissions or your API key</p>

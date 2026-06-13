@@ -19,10 +19,13 @@ export type {
   ClarificationResponse,
   ConversationTurn,
   DisplayInfo,
+  InstructionAction,
   InstructionResponse,
   SessionPlan,
   Settings,
   SessionStatus,
+  StepPace,
+  TtsEngine,
   TtsVoiceId,
   UploadedContext,
 } from "../../electron/types";

@@ -5,75 +5,76 @@ import { api } from "../lib/api";
 import { hashFrame, hashesAreSimilar } from "../lib/frameHash";
 import {
   useTts,
-  randomWaitingPhrase,
   randomCompletionPhrase,
   waitForSpeechEnd,
   isSpeaking,
 } from "./useTts";
 import { useQuietPeriod } from "./useQuietPeriod";
-import type { AppMode } from "../lib/api";
+import type { AppMode, StepPace } from "../lib/api";
 
 const RETRY_DELAY_MS = 10_000;
 
-// Timing constants that only apply in tech_support mode.
-const TS_POST_INSTRUCTION_COOLDOWN_MS = 5000;
-const TS_WAITING_NUDGE_DELAY_MS = 30_000;
-const TS_NUDGE_REPEAT_INTERVAL_MS = 60_000;
-const TS_QUIET_PERIOD_MS = 3_500; // silence before triggering a check
-const TS_IDLE_INTERVAL_MS = 30_000;
-const TS_IDLE_TICK_THRESHOLD = 3;
+// Tech-support pacing. The loop looks at the screen often; Claude decides
+// each tick whether to speak ("instruct"/"acknowledge"/"check_in"/"done")
+// or stay silent ("wait"), so frequent ticks don't rush the user.
+const TS_MIN_CALL_SPACING_MS = 8_000;
+const TS_BACKSTOP_MS = 15_000;
+const TS_SLOW_BACKSTOP_MS = 30_000;
+const TS_SLOW_AFTER_MS = 120_000; // screen still this long → slow backstop
+const TS_QUIET_PERIOD_MS = 4_000; // silence after input before a check
 
-// Timing for training mode — slow, non-interrupting.
-const TRAIN_POST_INSTRUCTION_COOLDOWN_MS = 10_000;
-const TRAIN_NORMAL_INTERVAL_MS = 60_000;
-const TRAIN_IDLE_INTERVAL_MS = 90_000;
+// How long the screen must be still before a stall tick (which lets Claude
+// check in), scaled by the expected pace of the current step.
+const STALL_THRESHOLD_MS: Record<StepPace, number> = {
+  quick: 18_000,
+  medium: 45_000,
+  long: 90_000,
+};
+const CHECK_IN_REPEAT_MS = 60_000;
 
 type ModeConfig = {
-  // How long to wait before the first re-poll after an instruction.
-  postCooldownMs: number;
-  // Fallback auto-poll interval (ms). 0 = no auto-poll (teacher mode).
+  // Minimum time between Claude calls, stamped when the call is made.
+  minCallSpacingMs: number;
+  // Backstop auto-poll interval (ms). 0 = no auto-poll (teacher mode).
   normalIntervalMs: number;
-  idleIntervalMs: number;
-  idleTickThreshold: number;
-  // Whether to play "I'm still watching" nudges.
-  nudgeEnabled: boolean;
+  // Backstop when the screen has been still for a long time.
+  slowIntervalMs: number;
   // ms of silence after last input before triggering a check. 0 = disabled.
   quietPeriodMs: number;
-  // If true, skip the tick unless screen changed or there's a pending follow-up.
+  // Whether ticks may proceed without a screen change to let Claude check in.
+  stallEnabled: boolean;
+  // If true, skip the Claude call unless screen changed or follow-up pending.
   // If false (teacher), ONLY fire when there's a pending follow-up.
   requireScreenChange: boolean;
 };
 
-function getModeConfig(mode: AppMode | null, _captureIntervalSec: number): ModeConfig {
+function getModeConfig(mode: AppMode | null): ModeConfig {
   switch (mode) {
     case "training":
       return {
-        postCooldownMs: TRAIN_POST_INSTRUCTION_COOLDOWN_MS,
-        normalIntervalMs: TRAIN_NORMAL_INTERVAL_MS,
-        idleIntervalMs: TRAIN_IDLE_INTERVAL_MS,
-        idleTickThreshold: 999, // effectively disable idle tier
-        nudgeEnabled: false,
+        minCallSpacingMs: 10_000,
+        normalIntervalMs: 60_000,
+        slowIntervalMs: 60_000,
         quietPeriodMs: 0, // no input trigger in training
+        stallEnabled: false,
         requireScreenChange: true,
       };
     case "teacher":
       return {
-        postCooldownMs: 2000,
+        minCallSpacingMs: 2_000,
         normalIntervalMs: 0, // no auto-poll — conversation-driven only
-        idleIntervalMs: 0,
-        idleTickThreshold: 999,
-        nudgeEnabled: false,
-        quietPeriodMs: 0, // conversation-driven, not input-triggered
+        slowIntervalMs: 0,
+        quietPeriodMs: 0,
+        stallEnabled: false,
         requireScreenChange: false,
       };
     default: // tech_support
       return {
-        postCooldownMs: TS_POST_INSTRUCTION_COOLDOWN_MS,
-        normalIntervalMs: 30_000, // fallback — quiet period handles responsive triggering
-        idleIntervalMs: TS_IDLE_INTERVAL_MS,
-        idleTickThreshold: TS_IDLE_TICK_THRESHOLD,
-        nudgeEnabled: true,
+        minCallSpacingMs: TS_MIN_CALL_SPACING_MS,
+        normalIntervalMs: TS_BACKSTOP_MS,
+        slowIntervalMs: TS_SLOW_BACKSTOP_MS,
         quietPeriodMs: TS_QUIET_PERIOD_MS,
+        stallEnabled: true,
         requireScreenChange: true,
       };
   }
@@ -94,7 +95,6 @@ function instructionsAreSimilar(a: string, b: string): boolean {
 
 export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
   const timerRef = useRef<number | null>(null);
-  const nudgeTimerRef = useRef<number | null>(null);
   const inFlightRef = useRef(false);
   const tickRef = useRef<() => Promise<void>>(async () => {});
   const focusedRef = useRef(focused);
@@ -118,12 +118,16 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
 
     const now = Date.now();
     if (state.rateLimitUntil && now < state.rateLimitUntil) return;
-    if (state.cooldownUntil && now < state.cooldownUntil) return;
 
-    const cfg = getModeConfig(
-      state.mode,
-      useSettings.getState().settings?.captureIntervalSec ?? 15,
-    );
+    const cfg = getModeConfig(state.mode);
+
+    // Minimum spacing between Claude calls. Stamped when the call is made,
+    // so a skipped or deduped response can never wedge the loop.
+    if (
+      state.lastClaudeCallAt &&
+      now - state.lastClaudeCallAt < cfg.minCallSpacingMs
+    )
+      return;
 
     // Teacher mode: only fire when the user has sent a follow-up message.
     if (!cfg.requireScreenChange && !state.pendingFollowUp) return;
@@ -145,21 +149,39 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
       }
       useSession.getState().pushFrame(frame);
 
-      // 2. Screen-change detection — skip the API call when nothing meaningful
-      //    has happened (cursor jitter, blinking caret, etc).
+      // 2. Screen-change detection — filters cursor jitter, blinking carets.
       const newHash = await hashFrame(frame.dataUrl);
       const lastHash = useSession.getState().lastProcessedHash;
       const screenChanged = !hashesAreSimilar(newHash, lastHash ?? "");
-      const hasPendingFollowUp = Boolean(useSession.getState().pendingFollowUp);
+      if (screenChanged) {
+        useSession.getState().setLastScreenChangeAt(now);
+      }
+      const s0 = useSession.getState();
+      const hasPendingFollowUp = Boolean(s0.pendingFollowUp);
 
-      if (cfg.requireScreenChange && !screenChanged && !hasPendingFollowUp) {
-        useSession.getState().incrementIdleCycles();
+      const sinceChangeMs = now - (s0.lastScreenChangeAt ?? now);
+      const sinceSpokeMs = now - (s0.lastSpokeAt ?? now);
+
+      // Stall ladder: when the screen has been still longer than the current
+      // step should take (pace-scaled), proceed anyway so Claude can look and
+      // either stay silent ("wait") or check in. Suppressed while the user is
+      // off on a digression and rate-limited to one check-in per minute.
+      const stallThresholdMs = STALL_THRESHOLD_MS[s0.currentPace];
+      const stalled =
+        cfg.stallEnabled &&
+        !s0.diverted &&
+        s0.lastSpokeAt !== null &&
+        sinceChangeMs >= stallThresholdMs &&
+        sinceSpokeMs >= stallThresholdMs &&
+        (!s0.lastCheckInAt || now - s0.lastCheckInAt >= CHECK_IN_REPEAT_MS);
+
+      if (cfg.requireScreenChange && !screenChanged && !hasPendingFollowUp && !stalled) {
         return;
       }
-      useSession.getState().resetIdleCycles();
 
       // 3. Ask Claude. We deliberately do NOT cancel any in-flight TTS here
       //    — the peek phrase should keep playing while Claude thinks.
+      useSession.getState().setLastClaudeCallAt(now);
       useSession.getState().setStatus("thinking");
       const s = useSession.getState();
 
@@ -169,14 +191,15 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
         useSession.getState().setPendingFollowUp(null);
       }
 
-      // Subscribe to early instruction event — fires as soon as the instruction
-      // field is complete in the Claude stream, before the full JSON arrives.
+      // Subscribe to early instruction event — fires as soon as the
+      // instruction field is complete in the Claude stream (never for "wait").
       let earlySpoken = false;
       const unsubEarly = api().claude.onInstructionReady((earlyText) => {
         const ttsOn = useSettings.getState().settings?.ttsEnabled;
         if (ttsOn) {
           speakRef.current(earlyText);
           earlySpoken = true;
+          useSession.getState().setLastSpokeAt(Date.now());
         }
       });
 
@@ -190,6 +213,11 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
         clarificationContext: s.clarificationContext,
         uploadedContext: s.uploadedContext,
         agentNotes: s.agentNotes,
+        secondsSinceScreenChange: Math.round(sinceChangeMs / 1000),
+        secondsSinceLastSpoke: s.lastSpokeAt
+          ? Math.round(sinceSpokeMs / 1000)
+          : undefined,
+        stalled,
       });
       unsubEarly();
 
@@ -223,63 +251,114 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
         return;
       }
 
-      // 4. Update state
+      // 4. Update state — these apply on EVERY action, including "wait",
+      //    so Claude can mark progress silently.
       useSession.getState().setError(null);
       useSession.getState().setRateLimit(null);
+      useSession.getState().setLastProcessedHash(newHash);
+      useSession.getState().setCompletedSteps(result.completedSteps);
+      useSession.getState().setUpcomingSteps(result.upcomingSteps ?? []);
 
       if (result.notes && result.notes.trim().length > 0) {
         useSession.getState().appendAgentNote(result.notes.trim());
       }
 
-      // Digression: user navigated away from the task. Speak a warm pause
-      // message and stop the loop — it resumes when the user sends a follow-up.
+      const ttsEnabled = useSettings.getState().settings?.ttsEnabled;
+
+      // Digression: user navigated away from the task. Speak the warm pause
+      // message ONCE, then keep watching silently — the loop auto-resumes
+      // when the screen shows the task again (no typed follow-up needed).
       if (result.digression) {
+        const alreadyDiverted = useSession.getState().diverted;
         useSession.getState().setDiverted(true);
-        useSession.getState().setLastProcessedHash(newHash);
-        useSession.getState().setInstruction(result.instruction);
-        useSession.getState().appendTurn({
-          role: "assistant",
-          content: result.instruction,
-          timestamp: Date.now(),
-        });
-        useSession.getState().setLastSpokenInstruction(result.instruction);
-        const ttsEnabled = useSettings.getState().settings?.ttsEnabled;
-        if (ttsEnabled && !earlySpoken) speakRef.current(result.instruction);
-        useSession.getState().setStatus("waiting");
+        if (!alreadyDiverted && result.instruction) {
+          useSession.getState().setInstruction(result.instruction);
+          useSession.getState().appendTurn({
+            role: "assistant",
+            content: result.instruction,
+            timestamp: Date.now(),
+          });
+          useSession.getState().setLastSpokeAt(Date.now());
+          if (ttsEnabled && !earlySpoken) speakRef.current(result.instruction);
+        }
+        useSession.getState().setStatus("watching");
         return;
       }
+      // Any substantive response while diverted means the user is back on task.
+      if (
+        useSession.getState().diverted &&
+        (result.action === "instruct" ||
+          result.action === "acknowledge" ||
+          result.action === "done")
+      ) {
+        useSession.getState().setDiverted(false);
+      }
 
-      const lastSpoken = useSession.getState().lastSpokenInstruction;
-      const isRepeat =
+      // Dedupe safety net (instruct only): if Claude repeated itself
+      // verbatim, treat it as a wait instead of speaking again. State and
+      // call spacing are already stamped, so this can never wedge the loop.
+      let action = result.action;
+      if (
+        action === "instruct" &&
         result.instruction &&
-        instructionsAreSimilar(result.instruction, lastSpoken ?? "");
+        instructionsAreSimilar(
+          result.instruction,
+          useSession.getState().lastSpokenInstruction ?? "",
+        )
+      ) {
+        api().log("[loop] repeated instruction suppressed; treating as wait");
+        action = "wait";
+      }
 
-      useSession.getState().setCompletedSteps(result.completedSteps);
-      useSession.getState().setUpcomingSteps(result.upcomingSteps ?? []);
-      useSession.getState().setDone(result.done);
-      useSession.getState().setLastProcessedHash(newHash);
+      switch (action) {
+        case "wait":
+          break;
 
-      if (!isRepeat) {
-        useSession.getState().setInstruction(result.instruction);
-        useSession.getState().appendTurn({
-          role: "assistant",
-          content: result.instruction,
-          timestamp: Date.now(),
-        });
-        useSession.getState().setLastSpokenInstruction(result.instruction);
-        useSession.getState().setLastInstructionAt(Date.now());
+        case "instruct": {
+          useSession.getState().setInstruction(result.instruction);
+          useSession.getState().appendTurn({
+            role: "assistant",
+            content: result.instruction,
+            timestamp: Date.now(),
+          });
+          useSession.getState().setLastSpokenInstruction(result.instruction);
+          useSession.getState().setLastSpokeAt(Date.now());
+          useSession.getState().setCurrentPace(result.expectedPace);
+          if (ttsEnabled && !earlySpoken) speakRef.current(result.instruction);
+          break;
+        }
 
-        useSession.getState().resetIdleCycles();
+        case "acknowledge":
+        case "check_in": {
+          useSession.getState().appendTurn({
+            role: "assistant",
+            content: result.instruction,
+            timestamp: Date.now(),
+          });
+          useSession.getState().setLastSpokeAt(Date.now());
+          if (action === "check_in") {
+            useSession.getState().setLastCheckInAt(Date.now());
+          }
+          if (ttsEnabled && !earlySpoken) speakRef.current(result.instruction);
+          break;
+        }
 
-        const ttsEnabled = useSettings.getState().settings?.ttsEnabled;
-        if (ttsEnabled) {
-          if (result.done) {
+        case "done": {
+          useSession.getState().setInstruction(result.instruction);
+          useSession.getState().appendTurn({
+            role: "assistant",
+            content: result.instruction,
+            timestamp: Date.now(),
+          });
+          useSession.getState().setLastSpokenInstruction(result.instruction);
+          useSession.getState().setLastSpokeAt(Date.now());
+          useSession.getState().setDone(true);
+          if (ttsEnabled) {
             speakRef.current(
               `${result.instruction} ${randomCompletionPhrase()}`,
             );
-          } else if (!earlySpoken) {
-            speakRef.current(result.instruction);
           }
+          break;
         }
       }
 
@@ -304,13 +383,12 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
         return;
       }
 
-      if (result.done) {
+      // "waiting" is reached ONLY when the goal is done — a legitimate stop.
+      // submitFollowUp resumes from it.
+      if (action === "done") {
         useSession.getState().setStatus("waiting");
       } else {
         useSession.getState().setStatus("watching");
-        useSession.getState().setCooldownUntil(
-          Date.now() + cfg.postCooldownMs,
-        );
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -343,18 +421,17 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
       if (cancelled) return;
 
       const s = useSession.getState();
-      const cfg = getModeConfig(
-        s.mode,
-        useSettings.getState().settings?.captureIntervalSec ?? 15,
-      );
+      const cfg = getModeConfig(s.mode);
 
       // Teacher mode has no auto-poll — loop exits here and restarts only
       // when a follow-up is submitted (see the pendingFollowUp watcher below).
       if (cfg.normalIntervalMs === 0) return;
 
+      // After a long stretch with no screen change, slow the backstop down.
+      const sinceChangeMs = Date.now() - (s.lastScreenChangeAt ?? Date.now());
       const delayMs =
-        s.idleCycles >= cfg.idleTickThreshold
-          ? cfg.idleIntervalMs
+        sinceChangeMs > TS_SLOW_AFTER_MS
+          ? cfg.slowIntervalMs
           : cfg.normalIntervalMs;
 
       timerRef.current = window.setTimeout(scheduledTick, delayMs);
@@ -417,69 +494,17 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
     return unsub;
   }, []);
 
-  // Waiting nudge: tech_support only. After WAITING_NUDGE_DELAY_MS of no new
-  // instruction, speak a gentle phrase so the user knows we're still watching.
-  useEffect(() => {
-    let lastNudgeAt: number | null = null;
-
-    nudgeTimerRef.current = window.setInterval(() => {
-      const s = useSession.getState();
-      const cfg = getModeConfig(
-        s.mode,
-        useSettings.getState().settings?.captureIntervalSec ?? 15,
-      );
-      if (!cfg.nudgeEnabled) return;
-
-      const ttsEnabled = useSettings.getState().settings?.ttsEnabled;
-      if (!ttsEnabled) return;
-      if (!s.lastInstructionAt) return;
-      if (
-        s.status === "thinking" ||
-        s.status === "error" ||
-        s.status === "waiting" ||
-        s.status === "paused"
-      )
-        return;
-
-      const elapsed = Date.now() - s.lastInstructionAt;
-      if (elapsed < TS_WAITING_NUDGE_DELAY_MS) return;
-
-      if (lastNudgeAt !== null && lastNudgeAt < s.lastInstructionAt) {
-        lastNudgeAt = null;
-      }
-
-      if (lastNudgeAt !== null && Date.now() - lastNudgeAt < TS_NUDGE_REPEAT_INTERVAL_MS)
-        return;
-
-      // Don't nudge while something is still being spoken.
-      if (isSpeaking()) return;
-
-      lastNudgeAt = Date.now();
-      speakRef.current(randomWaitingPhrase());
-
-      useSession.getState().setLastProcessedHash(null);
-      void tickRef.current();
-    }, 4000);
-
-    return () => {
-      if (nudgeTimerRef.current !== null) {
-        window.clearInterval(nudgeTimerRef.current);
-        nudgeTimerRef.current = null;
-      }
-    };
-  }, []);
-
   // Quiet period trigger: wait for TS_QUIET_PERIOD_MS of silence after user
-  // activity, then fire a tick. Disabled in training and teacher modes (cfg.quietPeriodMs=0).
+  // activity, then fire a tick. Disabled in training and teacher modes
+  // (cfg.quietPeriodMs=0) and while the user is off on a digression — the
+  // backstop timer covers re-checking until they return to the task.
   useQuietPeriod(TS_QUIET_PERIOD_MS, () => {
     const s = useSession.getState();
     if (s.status !== "watching") return;
+    if (s.diverted) return;
     // Don't fire a tick while TTS is actively playing — it would cancel the audio.
     if (isSpeaking()) return;
-    const cfg = getModeConfig(
-      s.mode,
-      useSettings.getState().settings?.captureIntervalSec ?? 15,
-    );
+    const cfg = getModeConfig(s.mode);
     if (cfg.quietPeriodMs <= 0) return;
     void tickRef.current();
   });

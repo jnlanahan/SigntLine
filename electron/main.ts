@@ -83,6 +83,10 @@ async function loadKeysFromEnv() {
 
 let mainWindow: BrowserWindow | null = null;
 let glowWindow: BrowserWindow | null = null;
+// Collapse-to-bar state: remember the expanded size while collapsed, and
+// stop bounds persistence from saving the collapsed stub size.
+let expandedSize: { width: number; height: number } | null = null;
+let isCollapsed = false;
 let tray: Tray | null = null;
 let glowAdjusting = false;
 let inputDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -364,8 +368,10 @@ function createWindow() {
   mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   mainWindow.setOpacity(settings.opacity);
 
-  // Save position/size whenever the user moves or resizes the window
+  // Save position/size whenever the user moves or resizes the window.
+  // Skipped while collapsed so the bar's stub size never gets persisted.
   const saveBounds = () => {
+    if (isCollapsed) return;
     if (mainWindow && !mainWindow.isDestroyed()) {
       saveSettings({ windowBounds: mainWindow.getBounds() });
     }
@@ -392,6 +398,15 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   await loadKeysFromEnv();
+
+  // One-time migration: settings saved before the opaque-by-default change
+  // get forced to a fully opaque window once; the Settings sliders remain
+  // as the opt-out afterwards.
+  if (!loadSettings().uiOpaqueMigration) {
+    saveSettings({ opacity: 1, solidBackground: true, uiOpaqueMigration: true });
+    console.log("[settings] applied one-time opaque-UI migration");
+  }
+
   registerIpc();
   createWindow();
 
@@ -467,6 +482,7 @@ function registerIpc() {
   ipcMain.handle("keys:get-status", async () => ({
     anthropic: await hasKey("anthropic"),
     openai: await hasKey("openai"),
+    google: hasGoogleCredentials(),
   }));
 
   ipcMain.handle(
@@ -537,6 +553,9 @@ function registerIpc() {
         clarificationContext?: string;
         uploadedContext?: string;
         agentNotes?: string[];
+        secondsSinceScreenChange?: number;
+        secondsSinceLastSpoke?: number;
+        stalled?: boolean;
       },
     ) => {
       try {
@@ -631,6 +650,34 @@ function registerIpc() {
   );
 
   ipcMain.handle(
+    "window:set-collapsed",
+    (_e: IpcMainInvokeEvent, payload: { collapsed: boolean }) => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      const b = mainWindow.getBounds();
+      if (payload.collapsed && !isCollapsed) {
+        expandedSize = { width: b.width, height: b.height };
+        isCollapsed = true;
+        // Must shrink the minimum before setBounds — the normal minHeight
+        // (380) would block the bar height.
+        mainWindow.setMinimumSize(300, 48);
+        mainWindow.setBounds({ x: b.x, y: b.y, width: 380, height: 56 });
+        mainWindow.setResizable(false);
+      } else if (!payload.collapsed && isCollapsed) {
+        isCollapsed = false;
+        mainWindow.setResizable(true);
+        mainWindow.setMinimumSize(320, 380);
+        // Expand where the bar currently sits.
+        mainWindow.setBounds({
+          x: b.x,
+          y: b.y,
+          width: expandedSize?.width ?? 380,
+          height: expandedSize?.height ?? 720,
+        });
+      }
+    },
+  );
+
+  ipcMain.handle(
     "window:open-external",
     async (_e: IpcMainInvokeEvent, payload: { url: string }) => {
       if (!/^https?:\/\//i.test(payload.url)) return;
@@ -674,22 +721,30 @@ function registerIpc() {
       _e: IpcMainInvokeEvent,
       payload: { text: string; voice?: TtsVoice },
     ) => {
-      try {
-        let buffer: Buffer;
-        if (hasGoogleCredentials()) {
-          console.log("[SightLine TTS] Using Google Studio voice");
-          buffer = await speakTextGoogle(payload.text, payload.voice);
-        } else {
-          console.log("[SightLine TTS] Using OpenAI voice");
-          buffer = await speakText(payload.text, { voice: payload.voice });
+      // Fallback chain: Google Chirp 3 → OpenAI → error envelope. The
+      // renderer only reaches the system voice when both cloud engines fail.
+      let googleErr = "";
+      if (hasGoogleCredentials()) {
+        try {
+          const buffer = await speakTextGoogle(payload.text, payload.voice);
+          return { audioBase64: buffer.toString("base64"), engine: "google" as const };
+        } catch (err) {
+          googleErr = err instanceof Error ? err.message : String(err);
+          console.warn("[SightLine TTS] Google TTS failed, trying OpenAI:", googleErr);
         }
-        return { audioBase64: buffer.toString("base64") };
+      }
+      try {
+        const buffer = await speakText(payload.text, { voice: payload.voice });
+        return { audioBase64: buffer.toString("base64"), engine: "openai" as const };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes("missing_openai_key") || msg.includes("missing_google_credentials")) {
+        if (!googleErr && msg.includes("missing_openai_key")) {
           return { __error: "missing_openai_key" } as const;
         }
-        return { __error: "request_failed", message: msg } as const;
+        return {
+          __error: "request_failed",
+          message: [googleErr, msg].filter(Boolean).join(" / "),
+        } as const;
       }
     },
   );
