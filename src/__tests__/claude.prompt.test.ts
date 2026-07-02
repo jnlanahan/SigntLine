@@ -27,6 +27,23 @@ describe("Claude system prompt — TECH_SUPPORT_INTRO", () => {
   });
 });
 
+describe("Claude context header — never-dead-air rules", () => {
+  it("first turn forces a spoken first step", async () => {
+    const src = await import("../../electron/claude?raw");
+    const content = (src as unknown as { default: string }).default;
+    expect(content).toContain("The session just started");
+    expect(content).toContain("Do not choose wait");
+    expect(content).toContain("do not set digression=true");
+  });
+
+  it("stall check-in mentions the wrong-monitor possibility", async () => {
+    const src = await import("../../electron/claude?raw");
+    expect((src as unknown as { default: string }).default).toContain(
+      "which screen or monitor"
+    );
+  });
+});
+
 describe("Claude system prompt — spoken-style rules", () => {
   it("keeps responses short (60-word cap)", async () => {
     const src = await import("../../electron/claude?raw");

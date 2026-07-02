@@ -48,4 +48,27 @@ describe("timing constants (regression guards)", () => {
     };
     expect(src.default).toContain("!state.pendingFollowUp");
   });
+
+  it("DIVERTED_STALL_MS is 120000", async () => {
+    const src = await import("../hooks/useSessionLoop?raw");
+    expect((src as unknown as { default: string }).default).toContain(
+      "DIVERTED_STALL_MS = 120_000"
+    );
+  });
+
+  it("a digression can no longer suppress stall check-ins forever", async () => {
+    const src = (await import("../hooks/useSessionLoop?raw")) as unknown as {
+      default: string;
+    };
+    expect(src.default).toContain(
+      "(!s0.diverted || sinceChangeMs >= DIVERTED_STALL_MS)"
+    );
+  });
+
+  it("first tick after session start is flagged (guaranteed first step)", async () => {
+    const src = (await import("../hooks/useSessionLoop?raw")) as unknown as {
+      default: string;
+    };
+    expect(src.default).toContain("sessionJustStarted");
+  });
 });

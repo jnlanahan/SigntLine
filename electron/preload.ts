@@ -5,6 +5,7 @@ import type {
   Clarification,
   CaptureFrame,
   CaptureRegion,
+  CaptureTarget,
   ClarificationResponse,
   ConversationTurn,
   DisplayInfo,
@@ -32,6 +33,11 @@ export interface SightLineApi {
   };
   capture: {
     once(displayId: string | null): Promise<CaptureFrame>;
+    // Every screen with a live thumbnail — for the visual screen picker.
+    listTargets(): Promise<CaptureTarget[]>;
+    // Re-run the pixel-probe that maps capture sources to physical displays
+    // (screens flash briefly).
+    recalibrate(): Promise<{ complete: boolean }>;
   };
   files: {
     pickContext(): Promise<UploadedContext[]>;
@@ -50,6 +56,7 @@ export interface SightLineApi {
       secondsSinceScreenChange?: number;
       secondsSinceLastSpoke?: number;
       stalled?: boolean;
+      sessionJustStarted?: boolean;
     }): Promise<
       | InstructionResponse
       | { __error: "missing_api_key" }
@@ -86,7 +93,12 @@ export interface SightLineApi {
     setOpacity(opacity: number): Promise<void>;
     setIgnoreMouse(ignore: boolean): Promise<void>;
     setCollapsed(collapsed: boolean): Promise<void>;
+    minimize(): Promise<void>;
     openExternal(url: string): Promise<void>;
+    // Manual window dragging — CSS app-region drag is unreliable for
+    // transparent frameless windows on Windows, so the renderer drives it.
+    dragStart(): void;
+    dragEnd(): void;
   };
   tts: {
     speak(
@@ -131,6 +143,8 @@ const api: SightLineApi = {
   },
   capture: {
     once: (displayId) => ipcRenderer.invoke("capture:once", { displayId }),
+    listTargets: () => ipcRenderer.invoke("capture:list-targets"),
+    recalibrate: () => ipcRenderer.invoke("capture:recalibrate"),
   },
   files: {
     pickContext: () => ipcRenderer.invoke("files:pick-context"),
@@ -162,8 +176,11 @@ const api: SightLineApi = {
       ipcRenderer.invoke("window:set-ignore-mouse", { ignore }),
     setCollapsed: (collapsed) =>
       ipcRenderer.invoke("window:set-collapsed", { collapsed }),
+    minimize: () => ipcRenderer.invoke("window:minimize"),
     openExternal: (url) =>
       ipcRenderer.invoke("window:open-external", { url }),
+    dragStart: () => ipcRenderer.send("window:drag-start"),
+    dragEnd: () => ipcRenderer.send("window:drag-end"),
   },
   tts: {
     speak: (text, voice) => ipcRenderer.invoke("tts:speak", { text, voice }),

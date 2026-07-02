@@ -3,8 +3,9 @@ import { useSettings } from "../store/settings";
 import { api } from "../lib/api";
 import { useTheme } from "../design/ThemeProvider";
 import { ar, lt } from "../design/theme";
-import type { AccentName, DisplayInfo, TtsVoiceId } from "../lib/api";
+import type { AccentName, TtsVoiceId } from "../lib/api";
 import { useTts, getTtsMode } from "../hooks/useTts";
+import { ScreenPicker } from "./ScreenPicker";
 
 const ACCENT_OPTIONS: { name: AccentName; label: string; color: string; rgb: string }[] = [
   { name: "lime",   label: "Lime",   color: "#C2E84B", rgb: "194,232,75"  },
@@ -42,10 +43,6 @@ export function Settings({ onClose }: Props) {
   const keyStatus = useSettings((s) => s.keyStatus);
   const patch     = useSettings((s) => s.patch);
 
-  const [displays, setDisplays] = useState<DisplayInfo[]>([]);
-
-  useEffect(() => { void api().displays.list().then(setDisplays); }, []);
-
   if (!settings) return null;
 
   const sectionLabel: React.CSSProperties = {
@@ -67,9 +64,9 @@ export function Settings({ onClose }: Props) {
   const accentBtnStyle = (active: boolean): React.CSSProperties => ({
     flex: 1, padding: "7px 0",
     borderRadius: 9,
-    border: active ? `1px solid ${ar(T.accentRGB, 0.6)}` : `1px solid ${lt(0.08)}`,
-    background: active ? ar(T.accentRGB, 0.12) : lt(0.04),
-    color: active ? T.accent : T.ink2,
+    border: active ? `1px solid ${ar(T.accentRGB, 0.7)}` : `1px solid ${lt(0.08)}`,
+    background: active ? ar(T.accentRGB, 0.16) : lt(0.04),
+    color: active ? T.accentText : T.ink2,
     fontSize: 12, fontWeight: active ? 600 : 400,
     cursor: "pointer", fontFamily: "inherit",
     transition: "all 140ms",
@@ -103,7 +100,7 @@ export function Settings({ onClose }: Props) {
       style={{
         position: "absolute", inset: 0,
         display: "flex", flexDirection: "column",
-        background: "rgba(13,14,18,0.97)",
+        background: "rgba(247,245,239,0.98)",
         fontFamily: "ui-sans-serif, system-ui, Segoe UI, sans-serif",
         borderRadius: 22,
       }}
@@ -172,20 +169,11 @@ export function Settings({ onClose }: Props) {
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <span style={{ fontSize: 12.5, fontWeight: 500, color: T.ink }}>Display</span>
-            <select
-              title="Select display"
-              value={settings.selectedDisplayId ?? ""}
-              onChange={(e) => patch({ selectedDisplayId: e.target.value || null })}
-              style={selectStyle}
-            >
-              <option value="">Primary display (auto)</option>
-              {displays.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.label} {d.primary ? "(primary)" : ""} — {d.width}×{d.height}
-                </option>
-              ))}
-            </select>
+            <span style={{ fontSize: 12.5, fontWeight: 500, color: T.ink }}>Which screen should I watch?</span>
+            <p style={{ fontSize: 10, color: T.ink3, margin: 0, lineHeight: 1.5 }}>
+              Pick the screen you'll be working on — these previews show exactly what the AI will see.
+            </p>
+            <ScreenPicker />
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -445,10 +433,10 @@ function VoicePicker({
         <p style={{ fontSize: 10, color: T.ink3, margin: 0 }}>Testing…</p>
       )}
       {previewResult === "google" && (
-        <p style={{ fontSize: 10, color: "#8FCB66", margin: 0 }}>✓ Natural voice (Google Chirp 3) — working</p>
+        <p style={{ fontSize: 10, color: "#4F8A2C", margin: 0 }}>✓ Natural voice (Google Chirp 3) — working</p>
       )}
       {previewResult === "openai" && (
-        <p style={{ fontSize: 10, color: "#8FCB66", margin: 0 }}>✓ Natural voice (OpenAI backup) — working</p>
+        <p style={{ fontSize: 10, color: "#4F8A2C", margin: 0 }}>✓ Natural voice (OpenAI backup) — working</p>
       )}
       {previewResult === "system" && (
         <p style={{ fontSize: 10, color: "#f59e0b", margin: 0 }}>⚠ System voice only — check your Google or OpenAI key</p>

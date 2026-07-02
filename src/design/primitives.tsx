@@ -11,7 +11,7 @@ export function Glow({ inset = "-60px -50px -90px -50px" }: { inset?: string }) 
     <div aria-hidden style={{
       position: "absolute", inset, pointerEvents: "none", zIndex: 0, filter: "blur(34px)",
       animation: "sl-bloom 7s ease-in-out infinite",
-      background: `radial-gradient(58% 50% at 64% 28%, ${ar(T.accentRGB, 0.3)} 0%, transparent 70%), radial-gradient(58% 55% at 32% 78%, ${ar(T.accentRGB, 0.16)} 0%, transparent 70%)`,
+      background: `radial-gradient(58% 50% at 64% 28%, ${ar(T.accentRGB, 0.16)} 0%, transparent 70%), radial-gradient(58% 55% at 32% 78%, ${ar(T.accentRGB, 0.09)} 0%, transparent 70%)`,
     }} />
   );
 }
@@ -81,7 +81,7 @@ export function Eyebrow({ children }: { children: React.ReactNode }) {
 export function Cmd({ children, small }: { children: React.ReactNode; small?: boolean }) {
   const T = useTheme();
   return <code style={{
-    fontFamily: '"SF Mono", ui-monospace, Menlo, monospace', fontSize: small ? 11.5 : 12.5, fontWeight: 600, color: "#fff",
+    fontFamily: '"SF Mono", ui-monospace, Menlo, monospace', fontSize: small ? 11.5 : 12.5, fontWeight: 600, color: T.ink,
     background: ar(T.accentRGB, 0.2), border: `1px solid ${ar(T.accentRGB, 0.42)}`, padding: "1px 6px", borderRadius: 6, whiteSpace: "nowrap",
   }}>{children}</code>;
 }
@@ -127,7 +127,7 @@ export function SpeakingStrip({ waveCount = 36, height = 40 }: { waveCount?: num
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 12, height, padding: "0 14px", borderRadius: 11, background: ar(T.accentRGB, 0.08), border: `1px solid ${ar(T.accentRGB, 0.18)}` }}>
       <Waveform count={waveCount} height={height - 16} />
-      <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: "0.13em", color: T.accentSoft, flexShrink: 0 }}>SPEAKING</span>
+      <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: "0.13em", color: T.accentText, flexShrink: 0 }}>SPEAKING</span>
     </div>
   );
 }

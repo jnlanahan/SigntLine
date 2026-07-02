@@ -1,6 +1,27 @@
 import { desktopCapturer, screen } from "electron";
 import type { Display, DesktopCapturerSource } from "electron";
-import type { CaptureFrame, CaptureRegion, DisplayInfo } from "./types";
+import {
+  getCalibration,
+  invalidateCalibration,
+  type CalibrationResult,
+} from "./calibrate";
+import type {
+  CaptureFrame,
+  CaptureRegion,
+  CaptureTarget,
+  DisplayInfo,
+} from "./types";
+
+// Calibration is best-effort: capture must keep working (via the ID-matching
+// ladder) even when probing fails entirely.
+async function getCalibrationSafe(): Promise<CalibrationResult | null> {
+  try {
+    return await getCalibration();
+  } catch (err) {
+    console.warn("[capture] calibration unavailable:", err);
+    return null;
+  }
+}
 
 // Largest dimension we keep for the final vision payload. Cropping happens at
 // (near-)native resolution first, then we downscale to this for the API call.
@@ -24,14 +45,111 @@ export function listDisplays(): DisplayInfo[] {
 }
 
 /**
- * Capture a single frame from a given display. Returned as a base64 JPEG data
- * URL — never written to disk. Caller owns disposal (drop the reference).
+ * List every screen capture source with a live thumbnail, paired to a display
+ * when the platform lets us identify it. The user picks a target by looking
+ * at the thumbnail — the only method that can't be fooled by Windows'
+ * unreliable display-to-source ID mapping.
+ */
+export async function listCaptureTargets(): Promise<CaptureTarget[]> {
+  const cal = await getCalibrationSafe();
+  const displays = screen.getAllDisplays();
+  const primary = screen.getPrimaryDisplay();
+  const sources = await desktopCapturer.getSources({
+    types: ["screen"],
+    thumbnailSize: { width: 320, height: 200 },
+    fetchWindowIcons: false,
+  });
+
+  return sources.map((s, i) => {
+    // Calibrated (pixel-verified) pairing first; ID/index guesses only as
+    // fallback when calibration couldn't identify this source.
+    const calibratedDisplayId = cal?.sourceToDisplay.get(s.id);
+    const display =
+      (calibratedDisplayId
+        ? displays.find((d) => String(d.id) === calibratedDisplayId)
+        : undefined) ??
+      displays.find((d) => String(d.id) === s.display_id) ??
+      (sources.length === displays.length ? displays[i] : null);
+    const displayIndex = display ? displays.indexOf(display) : i;
+    const label =
+      display?.label && display.label.length > 0
+        ? display.label
+        : s.name || `Display ${displayIndex + 1}`;
+    const thumbSize = s.thumbnail.getSize();
+    return {
+      sourceId: s.id,
+      sourceName: s.name,
+      displayId: display ? String(display.id) : s.display_id || null,
+      label,
+      primary: display ? display.id === primary.id : i === 0,
+      thumbnailDataUrl: `data:image/jpeg;base64,${s.thumbnail.toJPEG(70).toString("base64")}`,
+      width: display?.size.width ?? thumbSize.width,
+      height: display?.size.height ?? thumbSize.height,
+    };
+  });
+}
+
+export interface CaptureSelection {
+  displayId: string | null;
+  // Source the user pinned by picking a thumbnail — wins over ID matching.
+  sourceId?: string | null;
+  sourceName?: string | null;
+}
+
+// Resolve the display whose geometry drives grab sizing and region cropping.
+// A pinned source's CALIBRATED display wins — it's the screen actually being
+// captured — falling back to the stored displayId only when unknown.
+function resolveTargetDisplay(
+  selection: CaptureSelection,
+  cal: CalibrationResult | null,
+): Display {
+  if (cal) {
+    const calId =
+      (selection.sourceId && cal.sourceToDisplay.get(selection.sourceId)) ||
+      (selection.sourceName && cal.nameToDisplay.get(selection.sourceName)) ||
+      null;
+    if (calId) {
+      const hit = screen.getAllDisplays().find((d) => String(d.id) === calId);
+      if (hit) return hit;
+    }
+  }
+  return pickDisplay(selection.displayId);
+}
+
+function findPinnedOrCalibrated(
+  sources: DesktopCapturerSource[],
+  selection: CaptureSelection,
+  cal: CalibrationResult | null,
+  target: Display,
+): { source: DesktopCapturerSource; via: string } | null {
+  const byId = selection.sourceId
+    ? sources.find((s) => s.id === selection.sourceId)
+    : undefined;
+  if (byId) return { source: byId, via: "pinned-id" };
+  const byName = selection.sourceName
+    ? sources.find((s) => s.name === selection.sourceName)
+    : undefined;
+  if (byName) return { source: byName, via: "pinned-name" };
+  const calSourceId = cal?.displayToSource.get(String(target.id));
+  const byCal = calSourceId
+    ? sources.find((s) => s.id === calSourceId)
+    : undefined;
+  if (byCal) return { source: byCal, via: "calibrated-source" };
+  return null;
+}
+
+/**
+ * Capture a single frame from the selected screen. Returned as a base64 JPEG
+ * data URL — never written to disk. Caller owns disposal (drop the reference).
  */
 export async function captureFrame(
-  selectedDisplayId: string | null,
+  selection: CaptureSelection,
   region: CaptureRegion | null = null,
 ): Promise<CaptureFrame> {
-  const target = pickDisplay(selectedDisplayId);
+  // Awaiting calibration here also guarantees no capture runs while marker
+  // windows are on screen — magenta frames can never reach the model.
+  let cal = await getCalibrationSafe();
+  const target = resolveTargetDisplay(selection, cal);
 
   // Grab the full display at (near-)native resolution so a cropped sub-region
   // still has enough detail. We downscale the final crop afterwards.
@@ -47,7 +165,35 @@ export async function captureFrame(
     fetchWindowIcons: false,
   });
 
-  const match = matchSource(sources, target);
+  // Resolution order: user-pinned source (picked by thumbnail) → calibrated
+  // mapping → the old ID-matching ladder as last resort. If the pinned or
+  // calibrated source vanished (monitor unplugged, source ids rotated),
+  // recalibrate once and retry before falling back.
+  let resolved = findPinnedOrCalibrated(sources, selection, cal, target);
+  const expectedButMissing =
+    !resolved &&
+    (selection.sourceId || selection.sourceName || cal?.displayToSource.size);
+  if (expectedButMissing) {
+    invalidateCalibration();
+    try {
+      cal = await getCalibration(true);
+    } catch {
+      cal = null;
+    }
+    resolved = findPinnedOrCalibrated(sources, selection, cal, target);
+  }
+
+  let match: DesktopCapturerSource | undefined;
+  if (resolved) {
+    match = resolved.source;
+    const logLine = `[capture] display=${target.id} matched via ${resolved.via} (source.name="${match.name}", sources=${sources.length})`;
+    if (logLine !== lastMatchLog) {
+      lastMatchLog = logLine;
+      console.log(logLine);
+    }
+  } else {
+    match = matchSource(sources, target);
+  }
   if (!match) {
     throw new Error("No screen capture source available");
   }

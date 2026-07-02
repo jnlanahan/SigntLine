@@ -74,7 +74,7 @@ export function CompletedSteps({ completedSteps, currentInstruction, upcomingSte
             <li key={`done-${i}`} style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
               <span style={{
                 width: 18, height: 18, borderRadius: "50%",
-                background: "rgba(34,197,94,0.15)", color: "#22c55e",
+                background: "rgba(62,142,39,0.16)", color: "#3E8E27",
                 display: "flex", alignItems: "center", justifyContent: "center",
                 flexShrink: 0, marginTop: 1,
               }}>
@@ -91,12 +91,12 @@ export function CompletedSteps({ completedSteps, currentInstruction, upcomingSte
             <li style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
               <span style={{
                 width: 18, height: 18, borderRadius: "50%",
-                border: `2px solid ${T.accent}`,
-                background: ar(T.accentRGB, 0.12),
+                border: `2px solid ${T.accentDeep}`,
+                background: ar(T.accentRGB, 0.14),
                 display: "flex", alignItems: "center", justifyContent: "center",
                 flexShrink: 0, marginTop: 1,
               }}>
-                <span style={{ width: 6, height: 6, borderRadius: "50%", background: T.accent }} />
+                <span style={{ width: 6, height: 6, borderRadius: "50%", background: T.accentDeep }} />
               </span>
               <span style={{ fontSize: 12, color: T.ink, lineHeight: 1.4, fontWeight: 500 }}>
                 {currentInstruction.length > 80

@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useTheme } from "../design/ThemeProvider";
-import { Eyebrow } from "../design/primitives";
-import { ar, lt } from "../design/theme";
+import { lt } from "../design/theme";
 
 interface Props {
   instruction: string;
@@ -66,9 +65,9 @@ export function Instruction({ instruction, status, done, error, researchQuery }:
         className="sl-selectable animate-fade-in"
         style={{
           borderRadius: 13, padding: "12px 14px", fontSize: 13.5, lineHeight: 1.5,
-          color: "#8FCB66",
-          border: `1px solid rgba(143,203,102,0.35)`,
-          background: "rgba(143,203,102,0.08)",
+          color: "#3D6E20",
+          border: `1px solid rgba(110,167,66,0.45)`,
+          background: "rgba(110,167,66,0.12)",
         }}
       >
         <span
@@ -76,7 +75,7 @@ export function Instruction({ instruction, status, done, error, researchQuery }:
             display: "inline-flex", width: 16, height: 16,
             alignItems: "center", justifyContent: "center",
             borderRadius: "50%", marginRight: 8,
-            background: "rgba(143,203,102,0.2)", color: "#8FCB66",
+            background: "rgba(110,167,66,0.25)", color: "#3D6E20",
             fontSize: 10, fontWeight: 700, verticalAlign: "middle",
           }}
         >
@@ -160,25 +159,35 @@ export function Instruction({ instruction, status, done, error, researchQuery }:
           border: `1px solid ${lt(0.06)}`, background: lt(0.02),
         }}
       >
-        Tell SightLine what you want to do, then start a session.
+        Taking a look at your screen — your first step is coming up.
       </div>
     );
   }
 
+  // The voice card: the coach's spoken words are the one dark object on the
+  // light panel — deep ink, serif, always the first thing your eye lands on.
   return (
     <div
       style={{
         borderRadius: 13,
-        background: "linear-gradient(180deg, #121419 0%, #0a0b0e 100%)",
-        border: `1px solid ${lt(0.07)}`,
-        boxShadow: "0 10px 30px -12px rgba(0,0,0,0.8)",
+        background: T.instr,
+        border: `1px solid rgba(0,0,0,0.25)`,
+        boxShadow: "0 12px 30px -12px rgba(22,26,14,0.55)",
         padding: "13px 15px",
       }}
     >
-      <Eyebrow>Current step</Eyebrow>
+      <div style={{
+        fontSize: 10, fontWeight: 700, letterSpacing: "0.13em",
+        textTransform: "uppercase", color: "rgba(240,238,228,0.5)",
+      }}>
+        Current step
+      </div>
       <div
         className="sl-selectable animate-fade-in"
-        style={{ marginTop: 8, fontSize: 14, lineHeight: 1.55, color: "#E6EAF0" }}
+        style={{
+          marginTop: 8, fontFamily: T.display, fontSize: 15.5,
+          lineHeight: 1.55, color: "#F4F1E8",
+        }}
       >
         {display}
         {display.length < instruction.length && (

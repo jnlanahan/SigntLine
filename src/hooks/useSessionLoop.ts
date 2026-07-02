@@ -33,6 +33,11 @@ const STALL_THRESHOLD_MS: Record<StepPace, number> = {
   long: 90_000,
 };
 const CHECK_IN_REPEAT_MS = 60_000;
+// A digression normally suppresses stall check-ins (don't pester someone on a
+// break) — but if the screen has been STILL this long while "diverted", the
+// digression call was probably wrong (e.g. watching the wrong monitor), so
+// let a check-in through rather than staying silent forever.
+const DIVERTED_STALL_MS = 120_000;
 
 type ModeConfig = {
   // Minimum time between Claude calls, stamped when the call is made.
@@ -181,7 +186,7 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
       const stallThresholdMs = STALL_THRESHOLD_MS[s0.currentPace];
       const stalled =
         cfg.stallEnabled &&
-        !s0.diverted &&
+        (!s0.diverted || sinceChangeMs >= DIVERTED_STALL_MS) &&
         s0.lastSpokeAt !== null &&
         sinceChangeMs >= stallThresholdMs &&
         sinceSpokeMs >= stallThresholdMs &&
@@ -226,6 +231,12 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
         useSession.getState().setLastSpokeAt(Date.now());
       });
 
+      // First look after session start: the model is told to give the first
+      // step immediately (never "wait", never a false "digression").
+      const sessionJustStarted = !s.conversation.some(
+        (t) => t.role === "assistant",
+      );
+
       const result = await api().claude.nextInstruction({
         mode: s.mode ?? "tech_support",
         goal: s.goal!,
@@ -241,6 +252,7 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
           ? Math.round(sinceSpokeMs / 1000)
           : undefined,
         stalled,
+        sessionJustStarted,
       });
 
       // Handle error envelope
@@ -312,6 +324,12 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
           result.action === "done")
       ) {
         useSession.getState().setDiverted(false);
+      }
+
+      if (sessionJustStarted && result.action === "wait") {
+        api().log(
+          "[loop] first tick returned wait despite sessionJustStarted — stall ladder will recover",
+        );
       }
 
       // Dedupe safety net (instruct only): if Claude repeated itself
@@ -434,6 +452,12 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
     async function scheduledTick() {
       if (cancelled) return;
       if (useSession.getState().status !== "watching") return;
+
+      // Never talk over ourselves: if audio is still playing (e.g. the plan
+      // overview right after session start), let it finish before looking at
+      // the screen — the capture is fresher afterwards anyway.
+      await waitForSpeechEnd();
+      if (cancelled) return;
 
       await tickRef.current();
 

@@ -5,19 +5,36 @@ import type { ConversationTurn } from "../../electron/types";
 
 interface Props {
   turns: ConversationTurn[];
+  // The current instruction renders as a distinguished "voice card" BELOW
+  // this list (see App.tsx) — hide the trailing assistant turn that carries
+  // the same text so it isn't shown twice.
+  hideLatestAssistant?: string;
+  // App owns the scroll anchor when the list is composed with other elements.
+  autoScroll?: boolean;
 }
 
-export function ConversationHistory({ turns }: Props) {
+export function ConversationHistory({
+  turns,
+  hideLatestAssistant,
+  autoScroll = true,
+}: Props) {
   const T = useTheme();
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  const visible = turns.filter(
+  let visible = turns.filter(
     (t) => !(t.role === "user" && t.content.startsWith("Goal:")),
   );
+  if (hideLatestAssistant && visible.length > 0) {
+    const last = visible[visible.length - 1];
+    if (last.role === "assistant" && last.content === hideLatestAssistant) {
+      visible = visible.slice(0, -1);
+    }
+  }
 
   useEffect(() => {
+    if (!autoScroll) return;
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [visible.length]);
+  }, [visible.length, autoScroll]);
 
   if (visible.length === 0) return null;
 

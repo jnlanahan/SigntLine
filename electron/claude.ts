@@ -148,6 +148,9 @@ export interface NextInstructionArgs {
   secondsSinceScreenChange?: number;
   secondsSinceLastSpoke?: number;
   stalled?: boolean;
+  // True on the very first look after the session starts — the model must
+  // give the first step, not wait.
+  sessionJustStarted?: boolean;
 }
 
 export async function getNextInstruction(
@@ -334,7 +337,12 @@ function buildContextHeader(args: NextInstructionArgs, frameCount: number): stri
   }
   if (args.stalled) {
     parts.push(
-      `The screen has been still for a while. The user may be working slowly, reading, or stuck. Choose check_in if you haven't spoken recently, otherwise wait.`,
+      `The screen has been still for a while. The user may be working slowly, reading, or stuck. Choose check_in if you haven't spoken recently, otherwise wait. If the screen looks unrelated to the goal or looks frozen, ask which screen or monitor they're working on — the watched screen may be the wrong one; they can switch it from the screen picker.`,
+    );
+  }
+  if (args.sessionJustStarted && args.mode === "tech_support") {
+    parts.push(
+      `The session just started — this is your first look at the screen. Give the FIRST concrete step toward the goal now (action=instruct). Do not choose wait, and do not set digression=true on this turn: if what's visible looks unrelated to the goal, the first step is getting the user there — or ask which screen or monitor they're working on.`,
     );
   }
   parts.push(NEXT_TURN_PROMPT[args.mode]);

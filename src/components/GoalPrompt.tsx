@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useVoice } from "../hooks/useVoice";
 import { useTts } from "../hooks/useTts";
 import { useSettings } from "../store/settings";
@@ -6,6 +6,7 @@ import { api } from "../lib/api";
 import { useTheme } from "../design/ThemeProvider";
 import { Eyebrow } from "../design/primitives";
 import { ar, lt } from "../design/theme";
+import { ScreenPicker } from "./ScreenPicker";
 import type { AppMode, Clarification, ClarificationQuestion, SessionPlan } from "../lib/api";
 
 interface Props {
@@ -39,7 +40,11 @@ export function GoalPrompt({ mode, onStart, onBack }: Props) {
   const [phase, setPhase] = useState<"input" | "clarifying" | "planning">("input");
   const [questions, setQuestions] = useState<ClarificationQuestion[]>([]);
   const [answers, setAnswers] = useState<string[]>([]);
-  const [customInputVisible, setCustomInputVisible] = useState<boolean[]>([]);
+  // One question at a time (plan-mode style): which question is on screen,
+  // and whether its free-text "Something else…" input is open.
+  const [qIndex, setQIndex] = useState(0);
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customText, setCustomText] = useState("");
   const [loadingClarify, setLoadingClarify] = useState(false);
   const [loadingPlan, setLoadingPlan] = useState(false);
   const [plan, setPlan] = useState<SessionPlan | null>(null);
@@ -47,6 +52,26 @@ export function GoalPrompt({ mode, onStart, onBack }: Props) {
   const voice = useVoice((text) =>
     setValue((prev) => (prev ? `${prev} ${text}` : text)),
   );
+
+  // Auto-start once the plan is ready — a human coach says "here's the plan"
+  // and gets going; they don't wait for you to press a button. The overview
+  // keeps playing through TTS; the plan steps stay visible in the session
+  // view's plan rail. "Start now" remains for the impatient.
+  const startedRef = useRef(false);
+  useEffect(() => {
+    if (!plan || loadingPlan || startedRef.current) return;
+    const hasContent = Boolean(plan.overview) || plan.steps.length > 0;
+    const timer = window.setTimeout(
+      () => {
+        if (startedRef.current) return;
+        startedRef.current = true;
+        handleLetsGo();
+      },
+      hasContent ? 2_500 : 300,
+    );
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plan, loadingPlan]);
 
   async function handleStart() {
     const t = value.trim();
@@ -57,7 +82,9 @@ export function GoalPrompt({ mode, onStart, onBack }: Props) {
       if ("questions" in result && result.questions.length > 0) {
         setQuestions(result.questions);
         setAnswers(new Array(result.questions.length).fill(""));
-        setCustomInputVisible(new Array(result.questions.length).fill(false));
+        setQIndex(0);
+        setCustomOpen(false);
+        setCustomText("");
         setPhase("clarifying");
         return;
       }
@@ -96,14 +123,6 @@ export function GoalPrompt({ mode, onStart, onBack }: Props) {
     }
   }
 
-  async function handleSubmitClarifications() {
-    const clarifications: Clarification[] = questions.map((q, i) => ({
-      question: q.question,
-      answer: answers[i] ?? "",
-    }));
-    await fetchPlan(value.trim(), clarifications);
-  }
-
   function handleLetsGo() {
     const clarifications: Clarification[] = questions.map((q, i) => ({
       question: q.question,
@@ -112,24 +131,32 @@ export function GoalPrompt({ mode, onStart, onBack }: Props) {
     onStart(value.trim(), clarifications, plan?.steps ?? []);
   }
 
-  function selectOption(qIdx: number, option: string) {
+  // Record the answer for the current question and advance — the last answer
+  // rolls straight into plan generation.
+  function answerCurrent(answer: string) {
     const next = [...answers];
-    next[qIdx] = option;
+    next[qIndex] = answer;
     setAnswers(next);
-    // Hide custom input when a chip option is selected
-    const nextVisible = [...customInputVisible];
-    nextVisible[qIdx] = false;
-    setCustomInputVisible(nextVisible);
+    setCustomOpen(false);
+    setCustomText("");
+    if (qIndex + 1 < questions.length) {
+      setQIndex(qIndex + 1);
+    } else {
+      const clarifications: Clarification[] = questions.map((q, i) => ({
+        question: q.question,
+        answer: next[i] ?? "",
+      }));
+      void fetchPlan(value.trim(), clarifications);
+    }
   }
 
-  function showCustomInput(qIdx: number) {
-    const nextVisible = [...customInputVisible];
-    nextVisible[qIdx] = true;
-    setCustomInputVisible(nextVisible);
-    // Clear chip selection so custom input is the active answer
-    const next = [...answers];
-    next[qIdx] = "";
-    setAnswers(next);
+  // Skip the remaining questions; keep whatever was already answered.
+  function skipRest() {
+    const clarifications: Clarification[] = questions.map((q, i) => ({
+      question: q.question,
+      answer: answers[i] ?? "",
+    }));
+    void fetchPlan(value.trim(), clarifications);
   }
 
   const inputStyle: React.CSSProperties = {
@@ -142,7 +169,7 @@ export function GoalPrompt({ mode, onStart, onBack }: Props) {
   // ── Planning phase ──────────────────────────────────────────────────────────
   if (phase === "planning") {
     return (
-      <div className="no-drag" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         <Eyebrow>
           {loadingPlan ? "Building your plan…" : "Here's the plan"}
         </Eyebrow>
@@ -178,184 +205,153 @@ export function GoalPrompt({ mode, onStart, onBack }: Props) {
                 ))}
               </ol>
             )}
-            {plan.steps.length === 0 && !loadingPlan && (
-              <p style={{ fontSize: 12.5, color: T.ink3, margin: 0 }}>
-                Starting session…
-              </p>
-            )}
-            <button
-              type="button"
-              onClick={handleLetsGo}
-              style={{
-                marginTop: 4, borderRadius: 9, border: 0,
-                background: `linear-gradient(180deg, ${T.accent}, ${T.accentDeep})`,
-                color: T.onAccent,
-                fontSize: 13, fontWeight: 600, padding: "9px 22px",
-                cursor: "pointer", alignSelf: "flex-end",
-                boxShadow: `0 4px 12px -4px ${ar(T.accentRGB, 0.7)}`,
-              }}
-            >
-              Let's go →
-            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 4 }}>
+              <span style={{ fontSize: 11.5, color: T.ink3 }}>
+                Starting automatically…
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  startedRef.current = true;
+                  handleLetsGo();
+                }}
+                style={{
+                  marginLeft: "auto", borderRadius: 9, border: 0,
+                  background: `linear-gradient(180deg, ${T.accent}, ${T.accentDeep})`,
+                  color: T.onAccent,
+                  fontSize: 13, fontWeight: 600, padding: "9px 22px",
+                  cursor: "pointer",
+                  boxShadow: `0 4px 12px -4px ${ar(T.accentRGB, 0.7)}`,
+                }}
+              >
+                Start now →
+              </button>
+            </div>
           </>
         )}
       </div>
     );
   }
 
-  // ── Clarifying phase ────────────────────────────────────────────────────────
+  // ── Clarifying phase — one question at a time, click to advance ────────────
   if (phase === "clarifying") {
+    const q = questions[qIndex];
+    if (!q) {
+      // Defensive: no question at this index — go straight to the plan.
+      skipRest();
+      return null;
+    }
+    const optionBtn = (opt: string, recommended: boolean): React.CSSProperties => ({
+      width: "100%", textAlign: "left" as const,
+      borderRadius: 11, padding: "10px 14px",
+      fontSize: 13, cursor: "pointer", transition: "all 140ms",
+      border: recommended
+        ? `1.5px solid ${ar(T.accentRGB, 0.6)}`
+        : `1px solid ${lt(0.1)}`,
+      background: recommended ? ar(T.accentRGB, 0.08) : lt(0.03),
+      color: T.ink,
+      display: "flex", alignItems: "center", gap: 8,
+    });
+
     return (
-      <div className="no-drag" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        <Eyebrow>A few quick questions to get started</Eyebrow>
-        {questions.map((q, i) => {
-          const recommended = q.options.slice(0, 2);
-          const additional = q.options.slice(2);
-          const selected = answers[i] ?? "";
-          const isCustom = customInputVisible[i];
+      <div key={qIndex} className="animate-fade-in" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <Eyebrow>
+          Question {qIndex + 1} of {questions.length}
+        </Eyebrow>
+        <p style={{ margin: 0, fontSize: 15, fontWeight: 600, lineHeight: 1.4, color: T.ink }}>
+          {q.question}
+        </p>
 
-          return (
-            <div key={i} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <label style={{ fontSize: 12.5, color: T.ink2, fontWeight: 500 }}>{q.question}</label>
-
-              {/* Recommended chips */}
-              {recommended.length > 0 && (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                  {recommended.map((opt) => {
-                    const active = selected === opt && !isCustom;
-                    return (
-                      <button
-                        key={opt}
-                        type="button"
-                        onClick={() => selectOption(i, opt)}
-                        style={{
-                          borderRadius: 20, padding: "6px 12px",
-                          fontSize: 12, cursor: "pointer", transition: "all 150ms",
-                          border: `1.5px solid ${active ? T.accent : ar(T.accentRGB, 0.4)}`,
-                          background: active ? `${ar(T.accentRGB, 0.15)}` : "transparent",
-                          color: active ? T.accent : T.ink2,
-                          fontWeight: active ? 600 : 400,
-                        }}
-                      >
-                        {opt}
-                      </button>
-                    );
-                  })}
-                </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+          {q.options.map((opt, i) => (
+            <button
+              key={opt}
+              type="button"
+              onClick={() => answerCurrent(opt)}
+              style={optionBtn(opt, i < 2)}
+            >
+              <span style={{
+                width: 18, height: 18, borderRadius: "50%", flexShrink: 0,
+                border: `1.5px solid ${i < 2 ? T.accentDeep : lt(0.25)}`,
+                display: "grid", placeItems: "center",
+                fontSize: 9, color: T.ink3,
+              }}>
+                {i + 1}
+              </span>
+              <span style={{ flex: 1 }}>{opt}</span>
+              {i === 0 && (
+                <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: "0.06em", color: T.accentText }}>
+                  RECOMMENDED
+                </span>
               )}
+            </button>
+          ))}
 
-              {/* Additional / alternative chips */}
-              {additional.length > 0 && (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                  {additional.map((opt) => {
-                    const active = selected === opt && !isCustom;
-                    return (
-                      <button
-                        key={opt}
-                        type="button"
-                        onClick={() => selectOption(i, opt)}
-                        style={{
-                          borderRadius: 20, padding: "5px 11px",
-                          fontSize: 11.5, cursor: "pointer", transition: "all 150ms",
-                          border: `1px solid ${active ? T.ink2 : lt(0.12)}`,
-                          background: active ? lt(0.08) : "transparent",
-                          color: active ? T.ink : T.ink3,
-                        }}
-                      >
-                        {opt}
-                      </button>
-                    );
-                  })}
-                  <button
-                    type="button"
-                    onClick={() => showCustomInput(i)}
-                    style={{
-                      borderRadius: 20, padding: "5px 11px",
-                      fontSize: 11.5, cursor: "pointer", transition: "all 150ms",
-                      border: `1px solid ${isCustom ? T.ink2 : lt(0.12)}`,
-                      background: isCustom ? lt(0.08) : "transparent",
-                      color: isCustom ? T.ink : T.ink3,
-                    }}
-                  >
-                    Custom…
-                  </button>
-                </div>
-              )}
-
-              {/* No additional options: always show Custom chip */}
-              {additional.length === 0 && (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                  <button
-                    type="button"
-                    onClick={() => showCustomInput(i)}
-                    style={{
-                      borderRadius: 20, padding: "5px 11px",
-                      fontSize: 11.5, cursor: "pointer", transition: "all 150ms",
-                      border: `1px solid ${isCustom ? T.ink2 : lt(0.12)}`,
-                      background: isCustom ? lt(0.08) : "transparent",
-                      color: isCustom ? T.ink : T.ink3,
-                    }}
-                  >
-                    Custom…
-                  </button>
-                </div>
-              )}
-
-              {/* Custom text input (visible when Custom chip is active) */}
-              {isCustom && (
-                <input
-                  type="text"
-                  value={selected}
-                  onChange={(e) => {
-                    const next = [...answers];
-                    next[i] = e.target.value;
-                    setAnswers(next);
-                  }}
-                  autoFocus
-                  placeholder="Type your answer…"
-                  className="no-drag"
-                  style={{ ...inputStyle, fontSize: 12.5, padding: "7px 11px" }}
-                />
-              )}
+          {/* Something else — free text */}
+          {!customOpen ? (
+            <button
+              type="button"
+              onClick={() => setCustomOpen(true)}
+              style={{ ...optionBtn("", false), color: T.ink2 }}
+            >
+              <span style={{
+                width: 18, height: 18, borderRadius: "50%", flexShrink: 0,
+                border: `1.5px solid ${lt(0.25)}`,
+                display: "grid", placeItems: "center", fontSize: 11, color: T.ink3,
+              }}>
+                ✎
+              </span>
+              Something else…
+            </button>
+          ) : (
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                type="text"
+                value={customText}
+                onChange={(e) => setCustomText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && customText.trim()) answerCurrent(customText.trim());
+                }}
+                autoFocus
+                placeholder="Type your answer…"
+                className="no-drag"
+                style={{ ...inputStyle, flex: 1, fontSize: 12.5, padding: "9px 12px" }}
+              />
+              <button
+                type="button"
+                disabled={!customText.trim()}
+                onClick={() => answerCurrent(customText.trim())}
+                style={{
+                  borderRadius: 9, border: 0,
+                  background: `linear-gradient(180deg, ${T.accent}, ${T.accentDeep})`,
+                  color: T.onAccent, fontSize: 12, fontWeight: 600,
+                  padding: "0 16px", cursor: "pointer",
+                  opacity: customText.trim() ? 1 : 0.4,
+                }}
+              >
+                Continue →
+              </button>
             </div>
-          );
-        })}
-
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 2 }}>
-          <button
-            type="button"
-            onClick={() => void fetchPlan(value.trim(), [])}
-            style={{
-              borderRadius: 9, border: `1px solid ${lt(0.08)}`,
-              background: "transparent", color: T.ink3,
-              fontSize: 12, padding: "7px 14px", cursor: "pointer",
-              transition: "color 150ms",
-            }}
-          >
-            Skip
-          </button>
-          <button
-            type="button"
-            onClick={() => void handleSubmitClarifications()}
-            style={{
-              marginLeft: "auto", borderRadius: 9, border: 0,
-              background: `linear-gradient(180deg, ${T.accent}, ${T.accentDeep})`,
-              color: T.onAccent,
-              fontSize: 12, fontWeight: 600, padding: "7px 18px",
-              cursor: "pointer",
-              boxShadow: `0 4px 12px -4px ${ar(T.accentRGB, 0.7)}`,
-            }}
-          >
-            Next →
-          </button>
+          )}
         </div>
+
+        <button
+          type="button"
+          onClick={skipRest}
+          style={{
+            alignSelf: "flex-start", border: 0, background: "transparent",
+            fontSize: 11.5, color: T.ink3, cursor: "pointer", padding: "2px 0",
+          }}
+        >
+          Skip the rest — just build the plan
+        </button>
       </div>
     );
   }
 
   // ── Input phase ─────────────────────────────────────────────────────────────
   return (
-    <div className="no-drag" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <button
         type="button"
         onClick={onBack}
@@ -367,6 +363,11 @@ export function GoalPrompt({ mode, onStart, onBack }: Props) {
       >
         ← Change mode
       </button>
+
+      {/* Multi-monitor: pick the watched screen right here, in the flow —
+          most users never open Settings. Renders nothing on single-screen. */}
+      <ScreenPicker compact />
+
       <Eyebrow>{copy.label}</Eyebrow>
       <textarea
         value={value}

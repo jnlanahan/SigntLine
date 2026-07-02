@@ -118,6 +118,11 @@ export interface Settings {
   captureIntervalSec: number;
   opacity: number;
   selectedDisplayId: string | null;
+  // Pin capture to a specific desktopCapturer source. When set, capture uses
+  // this source directly (by id, then by name) instead of trusting the
+  // display-to-source matching ladder — the user picked it by thumbnail.
+  selectedSourceId: string | null;
+  selectedSourceName: string | null;
   captureRegion: CaptureRegion | null;
   hasSeenPrivacyNotice: boolean;
   ttsEnabled: boolean;
@@ -141,6 +146,21 @@ export interface DisplayInfo {
   height: number;
 }
 
+// A selectable capture target: one desktopCapturer screen source, paired with
+// its display when identifiable. The thumbnail lets the user pick by looking
+// at actual screen content — display IDs on Windows are not reliable enough
+// to trust blindly.
+export interface CaptureTarget {
+  sourceId: string;
+  sourceName: string;
+  displayId: string | null;
+  label: string;
+  primary: boolean;
+  thumbnailDataUrl: string;
+  width: number;
+  height: number;
+}
+
 export interface ApiKeyStatus {
   anthropic: boolean;
   openai: boolean;
@@ -158,6 +178,9 @@ export type IpcChannel =
   | "keys:clear"
   | "displays:list"
   | "capture:once"
+  | "capture:list-targets"
+  | "capture:recalibrate"
+  | "window:minimize"
   | "files:pick-context"
   | "claude:next-instruction"
   | "claude:get-session-plan"

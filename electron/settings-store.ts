@@ -7,6 +7,8 @@ const DEFAULTS: Settings = {
   captureIntervalSec: 5,
   opacity: 1,
   selectedDisplayId: null,
+  selectedSourceId: null,
+  selectedSourceName: null,
   captureRegion: null,
   hasSeenPrivacyNotice: false,
   ttsEnabled: true,

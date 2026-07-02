@@ -42,3 +42,12 @@ export const IChevron = ({ c = "currentColor" }: IconProps) => (
 export const IMonitor = ({ c = "currentColor" }: IconProps) => (
   <svg style={sq} viewBox="0 0 20 20" fill="none"><rect x="2.5" y="3.5" width="15" height="10" rx="1.8" stroke={c} strokeWidth="1.6" /><path d="M7 17h6M10 13.5V17" stroke={c} strokeWidth="1.6" strokeLinecap="round" /></svg>
 );
+export const IMinimize = ({ c = "currentColor" }: IconProps) => (
+  <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 8.5h8" stroke={c} strokeWidth="1.6" strokeLinecap="round" /></svg>
+);
+export const ICollapse = ({ c = "currentColor" }: IconProps) => (
+  <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><rect x="2" y="7" width="8" height="3" rx="1" stroke={c} strokeWidth="1.4" /><path d="M6 1.5v3M4 3l2 2 2-2" stroke={c} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
+);
+export const IClose = ({ c = "currentColor" }: IconProps) => (
+  <svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M2 2l7 7M9 2l-7 7" stroke={c} strokeWidth="1.6" strokeLinecap="round" /></svg>
+);

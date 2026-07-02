@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSession } from "./store/session";
 import { useSettings } from "./store/settings";
 import { useSessionLoop } from "./hooks/useSessionLoop";
@@ -8,7 +8,7 @@ import { api } from "./lib/api";
 import { FollowUpInput } from "./components/FollowUpInput";
 import { GoalPrompt } from "./components/GoalPrompt";
 import { ModeSelect } from "./components/ModeSelect";
-import type { AppMode, Clarification, SessionStatus } from "./lib/api";
+import type { AppMode, CaptureTarget, Clarification, SessionStatus } from "./lib/api";
 import { Instruction } from "./components/Instruction";
 import { PrivacyNotice } from "./components/PrivacyNotice";
 import { Settings as SettingsView } from "./components/Settings";
@@ -16,7 +16,16 @@ import { CompletedSteps } from "./components/CompletedSteps";
 import { ConversationHistory } from "./components/ConversationHistory";
 import { useTheme } from "./design/ThemeProvider";
 import { Glow, Logo, Spinner, CtrlBtn } from "./design/primitives";
-import { IMic, IPause, IGear, IExpand, IMonitor } from "./design/icons";
+import {
+  IMic,
+  IPause,
+  IGear,
+  IExpand,
+  IMonitor,
+  IMinimize,
+  IClose,
+  IChevron,
+} from "./design/icons";
 import { ar, lt } from "./design/theme";
 
 type View = "panel" | "settings" | "privacy";
@@ -35,26 +44,26 @@ const MODE_META: Record<AppMode, { goalLabel: string; stepNoun: string }> = {
 
 const STATUS_TEXT: Record<SessionStatus, string> = {
   idle:        "Ready when you are",
-  watching:    "AI: WATCHING",
-  thinking:    "AI: THINKING",
+  watching:    "Watching your screen",
+  thinking:    "Thinking…",
   waiting:     "Done",
   paused:      "Paused",
   error:       "Error",
   clarifying:  "Setting up…",
-  researching: "Researching…",
-  evaluating:  "Checking work…",
+  researching: "Looking that up…",
+  evaluating:  "Checking your work…",
 };
 
 const STATUS_DOT: Record<SessionStatus, string> = {
-  idle:        "#79808D",
-  watching:    "#8FCB66",
-  thinking:    "#f59e0b",
-  waiting:     "#8FCB66",
-  paused:      "#79808D",
-  error:       "#ef4444",
-  clarifying:  "#f59e0b",
-  researching: "#f59e0b",
-  evaluating:  "#f59e0b",
+  idle:        "#7B816D",
+  watching:    "#4F8A2C",
+  thinking:    "#C07C10",
+  waiting:     "#4F8A2C",
+  paused:      "#7B816D",
+  error:       "#DB3B3B",
+  clarifying:  "#C07C10",
+  researching: "#C07C10",
+  evaluating:  "#C07C10",
 };
 
 export default function App() {
@@ -88,7 +97,14 @@ export default function App() {
   const [showStopConfirm, setShowStopConfirm] = useState(false);
   const [showQuitConfirm, setShowQuitConfirm] = useState(false);
   const [collapsed, setCollapsed]         = useState(false);
+  const [planOpen, setPlanOpen]           = useState(false);
   const [evalResult, setEvalResult]       = useState<{ achieved: boolean; verdict: string } | null>(null);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+
+  // Keep the newest message (usually the current instruction) in view.
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [conversation.length, instruction, status, evalResult]);
 
   const rateLimitCountdown = useRateLimitCountdown();
   const { cancel: cancelTts } = useTts();
@@ -162,6 +178,13 @@ export default function App() {
     if (planSteps.length > 0) useSession.getState().setUpcomingSteps(planSteps);
     setGoal(g);
     appendTurn({ role: "user", content: `Goal: ${g}`, timestamp: Date.now() });
+    // Arm the pacing clocks: the plan overview just spoke, and "now" is the
+    // baseline for screen stillness. Without these the stall check-in ladder
+    // never fires before the first instruction — if the screen never changes
+    // (e.g. capture is watching the wrong monitor) the app would stay silent
+    // forever instead of asking what's going on.
+    useSession.getState().setLastSpokeAt(Date.now());
+    useSession.getState().setLastScreenChangeAt(Date.now());
     setStatus("watching");
   }
 
@@ -288,7 +311,12 @@ export default function App() {
         onOpenSettings={openSettings}
         onAdjustCapture={() => { void api().overlay.setAdjust(true); }}
         onCollapse={() => void toggleCollapsed()}
-        onQuit={() => setShowQuitConfirm(true)}
+        onMinimize={() => void api().window.minimize()}
+        onQuit={() => {
+          // Mid-session, closing loses progress — confirm. Otherwise just quit.
+          if (goal) setShowQuitConfirm(true);
+          else void api().app.quit();
+        }}
       />
 
       {showQuitConfirm && (
@@ -326,23 +354,52 @@ export default function App() {
           )}
         </div>
       ) : (
-        /* Session layout: left column (instruction + chat + input) + right plan rail */
-        <div className="flex flex-1" style={{ minHeight: 0 }}>
-          {/* Left column — the main conversation */}
-          <div className="flex flex-1 flex-col" style={{ minWidth: 0, minHeight: 0 }}>
-            {/* Sticky top: goal + context + the current big instruction */}
-            <div className="flex flex-col gap-2.5 px-3 pt-2 pb-1" style={{ flexShrink: 0 }}>
-              <div className="flex flex-col gap-0.5">
-                <p className="font-mono text-[9px] uppercase tracking-widest text-sl-ink3">
-                  {MODE_META[mode].goalLabel}
-                </p>
-                <p className="text-xs leading-snug text-sl-ink2">{goal}</p>
-              </div>
-              <ContextPanel
-                fileNames={attachedFileNames}
-                notes={agentNotes}
-                onAttach={attachContext}
+        /* Session layout: chat-first. The conversation fills the panel; the
+           current instruction is the newest message IN the stream (so nothing
+           ever covers the chat); the plan lives in a drawer under the strip. */
+        <div className="flex flex-1 flex-col" style={{ minHeight: 0, position: "relative" }}>
+          {/* One-line goal + plan strip — click to open the plan drawer */}
+          <GoalStrip
+            label={MODE_META[mode].goalLabel}
+            goal={goal}
+            stepsDone={completedSteps.length}
+            stepsTotal={
+              completedSteps.length + (instruction ? 1 : 0) + upcomingSteps.length
+            }
+            open={planOpen}
+            onToggle={() => setPlanOpen((v) => !v)}
+          />
+
+          {/* Plan drawer — overlays the chat, never squeezes it */}
+          {planOpen && (
+            <PlanDrawer onClose={() => setPlanOpen(false)}>
+              <CompletedSteps
+                completedSteps={completedSteps}
+                currentInstruction={instruction}
+                upcomingSteps={upcomingSteps}
+                noun={MODE_META[mode].stepNoun}
               />
+              <div style={{ marginTop: 12 }}>
+                <ContextPanel
+                  fileNames={attachedFileNames}
+                  notes={agentNotes}
+                  onAttach={attachContext}
+                />
+              </div>
+            </PlanDrawer>
+          )}
+
+          {/* Chat stream */}
+          <div
+            className="flex-1 overflow-y-auto sl-scroll"
+            style={{ minHeight: 0, padding: "10px 12px 4px" }}
+          >
+            <ConversationHistory
+              turns={conversation}
+              hideLatestAssistant={instruction}
+              autoScroll={false}
+            />
+            <div style={{ marginTop: 8 }}>
               <Instruction
                 instruction={instruction}
                 status={status}
@@ -350,49 +407,25 @@ export default function App() {
                 error={error}
                 researchQuery={researchQuery}
               />
-              {evalResult && (
+            </div>
+            {evalResult && (
+              <div style={{ marginTop: 8 }}>
                 <EvalResultCard
                   achieved={evalResult.achieved}
                   verdict={evalResult.verdict}
                   onDismiss={() => setEvalResult(null)}
                 />
-              )}
-            </div>
-
-            {/* Scrollable conversation */}
-            <div className="flex-1 overflow-y-auto sl-scroll px-3 pb-1" style={{ minHeight: 0 }}>
-              <ConversationHistory turns={conversation} />
-            </div>
-
-            {/* Pinned follow-up input */}
-            <div className="px-3 pb-2 pt-1" style={{ flexShrink: 0 }}>
-              <FollowUpInput
-                isThinking={status === "thinking" || status === "evaluating"}
-                mode={mode}
-                onSubmit={submitFollowUp}
-              />
-            </div>
+              </div>
+            )}
+            <div ref={chatEndRef} />
           </div>
 
-          {/* Right plan rail — the step list, always visible, scrolls on its own */}
-          <div
-            className="sl-scroll"
-            style={{
-              width: 168,
-              flexShrink: 0,
-              borderLeft: `1px solid ${lt(0.08)}`,
-              display: "flex",
-              flexDirection: "column",
-              minHeight: 0,
-              overflowY: "auto",
-              padding: "8px 11px",
-            }}
-          >
-            <CompletedSteps
-              completedSteps={completedSteps}
-              currentInstruction={instruction}
-              upcomingSteps={upcomingSteps}
-              noun={MODE_META[mode].stepNoun}
+          {/* Pinned follow-up input */}
+          <div className="px-3 pb-2 pt-1" style={{ flexShrink: 0 }}>
+            <FollowUpInput
+              isThinking={status === "thinking" || status === "evaluating"}
+              mode={mode}
+              onSubmit={submitFollowUp}
             />
           </div>
         </div>
@@ -428,6 +461,46 @@ export default function App() {
   );
 }
 
+/* ── Manual window dragging ──
+   Grab anywhere that isn't an interactive control and the window follows the
+   cursor (moved by the main process — CSS app-region drag is unreliable for
+   transparent frameless windows on Windows). */
+
+function beginWindowDrag(e: React.PointerEvent) {
+  if (e.button !== 0) return;
+  const el = e.target as HTMLElement;
+  // Interactive/selectable elements keep their own pointer behavior. Scroll
+  // containers are excluded too: WebKit swallows pointerup on scrollbar drags,
+  // which previously left the window glued to the cursor.
+  if (
+    el.closest(
+      "button, input, textarea, select, a, [role='button'], .no-drag, .sl-selectable, .sl-scroll",
+    )
+  )
+    return;
+  api().window.dragStart();
+  // Pointer capture guarantees we receive pointerup even if the cursor ends
+  // up over another element by the time the button is released.
+  const shell = e.currentTarget as HTMLElement;
+  try {
+    shell.setPointerCapture(e.pointerId);
+  } catch {
+    // capture unsupported — global listeners below still cover it
+  }
+  const end = () => {
+    api().window.dragEnd();
+    try {
+      shell.releasePointerCapture(e.pointerId);
+    } catch {
+      // already released
+    }
+    window.removeEventListener("pointerup", end);
+    window.removeEventListener("pointercancel", end);
+  };
+  window.addEventListener("pointerup", end);
+  window.addEventListener("pointercancel", end);
+}
+
 /* ── Panel shell — full-window glass container ── */
 
 function PanelShell({ children, radius = 22 }: { children: React.ReactNode; radius?: number }) {
@@ -435,35 +508,134 @@ function PanelShell({ children, radius = 22 }: { children: React.ReactNode; radi
   const solidBg = useSettings((s) => s.settings?.solidBackground ?? false);
   return (
     <div
+      onPointerDown={beginWindowDrag}
       style={{
         position: "relative",
         width: "100vw",
         height: "100vh",
         borderRadius: radius,
         overflow: "hidden",
-        // backdropFilter must NOT be on this element — it breaks -webkit-app-region: drag on Windows/Chromium
         fontFamily: T.font,
         color: T.ink,
       }}
     >
-      {/* Background layer — glass or solid depending on setting */}
+      {/* Background layer — glass or solid depending on setting. Light
+          porcelain: the panel reads as a bright card, so it stands apart
+          from whatever's on screen behind it. */}
       <div aria-hidden style={{
         position: "absolute", inset: 0, pointerEvents: "none",
         ...(solidBg ? {
-          background: "rgb(13, 14, 18)",
+          background: T.surface,
         } : {
-          backdropFilter: "blur(26px) saturate(1.35)",
-          WebkitBackdropFilter: "blur(26px) saturate(1.35)",
+          backdropFilter: "blur(26px) saturate(1.2)",
+          WebkitBackdropFilter: "blur(26px) saturate(1.2)",
           background: `${T.glassGrad}, ${T.glassBg}`,
         }),
         border: `1px solid ${T.border}`,
-        boxShadow: `0 1px 0 0 ${T.hi} inset, 0 30px 70px -20px rgba(0,0,0,0.7), 0 0 0 1px rgba(0,0,0,0.3)`,
+        boxShadow: `0 1px 0 0 ${T.hi} inset, 0 24px 60px -18px rgba(22,26,14,0.55), 0 0 0 1px rgba(22,26,14,0.18)`,
         borderRadius: radius,
       }} />
       <Glow />
       <div style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", height: "100%" }}>
         {children}
       </div>
+    </div>
+  );
+}
+
+/* ── Goal strip + plan drawer ── */
+
+function GoalStrip({
+  label,
+  goal,
+  stepsDone,
+  stepsTotal,
+  open,
+  onToggle,
+}: {
+  label: string;
+  goal: string;
+  stepsDone: number;
+  stepsTotal: number;
+  open: boolean;
+  onToggle(): void;
+}) {
+  const T = useTheme();
+  return (
+    <button
+      type="button"
+      className="no-drag"
+      onClick={onToggle}
+      title={open ? "Hide the plan" : "Show the plan and attached context"}
+      style={{
+        display: "flex", alignItems: "center", gap: 8,
+        width: "100%", textAlign: "left",
+        padding: "7px 14px", border: 0, cursor: "pointer",
+        borderBottom: `1px solid ${lt(0.08)}`,
+        background: open ? lt(0.05) : lt(0.02),
+        flexShrink: 0,
+      }}
+    >
+      <span style={{
+        fontSize: 9, fontWeight: 700, letterSpacing: "0.12em",
+        textTransform: "uppercase", color: T.ink3, flexShrink: 0,
+      }}>
+        {label}
+      </span>
+      <span style={{
+        flex: 1, minWidth: 0, fontSize: 12, color: T.ink2,
+        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+      }}>
+        {goal}
+      </span>
+      {stepsTotal > 0 && (
+        <span style={{ fontSize: 11, fontWeight: 600, color: T.accentText, flexShrink: 0 }}>
+          Step {Math.min(stepsDone + 1, stepsTotal)} of {stepsTotal}
+        </span>
+      )}
+      <span style={{
+        color: T.ink3, flexShrink: 0, display: "inline-flex",
+        transform: open ? "rotate(-90deg)" : "rotate(90deg)",
+        transition: "transform 160ms",
+      }}>
+        <IChevron />
+      </span>
+    </button>
+  );
+}
+
+function PlanDrawer({
+  children,
+  onClose,
+}: {
+  children: React.ReactNode;
+  onClose(): void;
+}) {
+  const T = useTheme();
+  return (
+    <div
+      className="no-drag sl-scroll sl-sheet-in"
+      style={{
+        position: "absolute", top: 36, left: 10, right: 10, zIndex: 40,
+        maxHeight: "62%", overflowY: "auto",
+        borderRadius: 13, border: `1px solid ${lt(0.16)}`,
+        background: T.surface,
+        boxShadow: "0 18px 44px -14px rgba(22,26,14,0.45)",
+        padding: "12px 14px",
+      }}
+    >
+      {children}
+      <button
+        type="button"
+        onClick={onClose}
+        style={{
+          marginTop: 10, borderRadius: 8, border: `1px solid ${lt(0.1)}`,
+          background: "transparent", color: T.ink3,
+          fontSize: 11, padding: "4px 12px", cursor: "pointer",
+        }}
+      >
+        Close
+      </button>
     </div>
   );
 }
@@ -492,7 +664,7 @@ function EvalResultCard({
         {achieved ? "✓" : "✗"}
       </span>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <p style={{ margin: "0 0 3px", fontSize: 11, fontWeight: 700, color: achieved ? "#8FCB66" : "#ef4444", letterSpacing: "0.04em", textTransform: "uppercase" }}>
+        <p style={{ margin: "0 0 3px", fontSize: 11, fontWeight: 700, color: achieved ? T.green : "#DB3B3B", letterSpacing: "0.04em", textTransform: "uppercase" }}>
           {achieved ? "Goal achieved" : "Not quite done"}
         </p>
         <p style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: T.ink2 }}>{verdict}</p>
@@ -527,6 +699,7 @@ function PanelHeader({
   onOpenSettings,
   onAdjustCapture,
   onCollapse,
+  onMinimize,
   onQuit,
 }: {
   status: SessionStatus;
@@ -537,6 +710,7 @@ function PanelHeader({
   onOpenSettings(): void;
   onAdjustCapture(): void;
   onCollapse(): void;
+  onMinimize(): void;
   onQuit(): void;
 }) {
   const T = useTheme();
@@ -544,25 +718,48 @@ function PanelHeader({
   const pulses   = status === "watching" || status === "thinking";
   const patchSettings = useSettings((s) => s.patch);
   const selectedDisplayId = useSettings((s) => s.settings?.selectedDisplayId ?? null);
-  const [displays, setDisplays] = useState<{ id: string; label: string; primary: boolean }[]>([]);
+  const selectedSourceId = useSettings((s) => s.settings?.selectedSourceId ?? null);
+  const [targets, setTargets] = useState<CaptureTarget[]>([]);
   useEffect(() => {
-    void api().displays.list().then(setDisplays);
+    void api().capture.listTargets().then(setTargets);
   }, []);
+
+  // The sight line: a luminous hairline under the header that encodes what
+  // the assistant is doing — breathing while it watches, sweeping while it
+  // thinks, quiet otherwise.
+  const lineStyle: React.CSSProperties =
+    status === "thinking" || status === "researching" || status === "evaluating"
+      ? {
+          background: `linear-gradient(90deg, transparent, ${T.accent} 35%, ${T.accentSoft} 50%, ${T.accent} 65%, transparent)`,
+          backgroundSize: "60% 100%",
+          backgroundRepeat: "no-repeat",
+          animation: "sl-line-sweep 1.3s linear infinite",
+        }
+      : status === "watching"
+        ? {
+            background: `linear-gradient(90deg, transparent, ${T.accent} 30%, ${T.accent} 70%, transparent)`,
+            animation: "sl-line-breathe 3.2s ease-in-out infinite",
+          }
+        : { background: lt(0.1) };
 
   return (
     <div
       className="drag-region"
       style={{
+        position: "relative",
         display: "flex", alignItems: "center", gap: 12,
         padding: "13px 16px 11px",
-        borderBottom: `1px solid ${lt(0.08)}`,
         flexShrink: 0,
       }}
     >
+      <span aria-hidden className="sl-sightline" style={{
+        position: "absolute", left: 14, right: 14, bottom: 0, height: 2,
+        borderRadius: 2, pointerEvents: "none", ...lineStyle,
+      }} />
       <Logo size={38} radius={11} />
 
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 18, fontWeight: 650, letterSpacing: "-0.02em", lineHeight: 1.1, color: T.ink }}>
+        <div style={{ fontFamily: T.display, fontSize: 19, fontWeight: 650, letterSpacing: "-0.01em", lineHeight: 1.1, color: T.ink }}>
           SightLine
         </div>
         <div style={{ marginTop: 3, display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: T.ink3 }}>
@@ -580,7 +777,7 @@ function PanelHeader({
           <span>{STATUS_TEXT[status]}</span>
           {mode && (
             <span style={{ color: T.ink3 }}>
-              ·&nbsp;<span style={{ color: T.accent }}>{MODE_LABELS[mode]}</span>
+              ·&nbsp;<span style={{ color: T.accentText, fontWeight: 600 }}>{MODE_LABELS[mode]}</span>
             </span>
           )}
         </div>
@@ -595,57 +792,84 @@ function PanelHeader({
         <CtrlBtn title="Adjust capture area" onClick={onAdjustCapture}>
           <CropIcon />
         </CtrlBtn>
-        {displays.length > 1 && (
+        {targets.length > 1 && (
           <CtrlBtn
-            title={`Watching: ${displays.find((d) => d.id === selectedDisplayId)?.label ?? "Primary"} — click to switch`}
+            title={`Watching: ${
+              targets.find(
+                (t) =>
+                  t.sourceId === selectedSourceId ||
+                  (!selectedSourceId && t.displayId === selectedDisplayId),
+              )?.label ?? "Primary"
+            } — click to switch screens (previews in Settings)`}
             onClick={() => {
-              const ids = displays.map((d) => d.id);
-              const idx = selectedDisplayId ? ids.indexOf(selectedDisplayId) : -1;
-              const next = displays[(idx + 1) % displays.length];
-              void patchSettings({ selectedDisplayId: next.id });
+              const idx = targets.findIndex(
+                (t) =>
+                  t.sourceId === selectedSourceId ||
+                  (!selectedSourceId && t.displayId === selectedDisplayId),
+              );
+              const next = targets[(idx + 1) % targets.length];
+              void patchSettings({
+                selectedDisplayId: next.displayId,
+                selectedSourceId: next.sourceId,
+                selectedSourceName: next.sourceName,
+              });
             }}
           >
             <IMonitor />
           </CtrlBtn>
         )}
-        <CtrlBtn title="Collapse to compact bar" onClick={onCollapse}>
-          <ChevronDownIcon />
+        <CtrlBtn title="Settings" onClick={onOpenSettings}>
+          <IGear />
         </CtrlBtn>
 
-        {/* Title-bar controls — visually distinct so they're always findable */}
-        <span aria-hidden style={{ width: 1, height: 22, background: lt(0.1), margin: "0 6px", flexShrink: 0 }} />
-        <button
-          type="button"
-          className="no-drag"
-          title="Settings"
-          onClick={onOpenSettings}
-          style={{
-            width: 40, height: 40, flexShrink: 0,
-            display: "grid", placeItems: "center",
-            borderRadius: 11, cursor: "pointer",
-            background: lt(0.06), border: `1px solid ${lt(0.1)}`,
-            color: T.ink,
-          }}
-        >
-          <IGear />
-        </button>
-        <button
-          type="button"
-          className="no-drag"
-          title="Quit SightLine"
-          onClick={onQuit}
-          style={{
-            width: 40, height: 40, flexShrink: 0, marginLeft: 4,
-            display: "grid", placeItems: "center",
-            borderRadius: 11, cursor: "pointer",
-            background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.3)",
-            color: "#ef4444",
-          }}
-        >
-          <CloseIcon size={14} />
-        </button>
+        {/* Standard window controls: minimize · collapse · close */}
+        <span aria-hidden style={{ width: 1, height: 22, background: lt(0.12), margin: "0 6px", flexShrink: 0 }} />
+        <WindowBtn title="Minimize" onClick={onMinimize}>
+          <IMinimize />
+        </WindowBtn>
+        <WindowBtn title="Collapse to compact bar" onClick={onCollapse}>
+          <ChevronDownIcon />
+        </WindowBtn>
+        <WindowBtn title="Close SightLine" onClick={onQuit} danger>
+          <IClose />
+        </WindowBtn>
       </div>
     </div>
+  );
+}
+
+// Window-chrome button — quieter than CtrlBtn but always findable, with a
+// bordered hit target like every other app's title bar.
+function WindowBtn({
+  children,
+  title,
+  onClick,
+  danger,
+}: {
+  children: React.ReactNode;
+  title: string;
+  onClick(): void;
+  danger?: boolean;
+}) {
+  const T = useTheme();
+  return (
+    <button
+      type="button"
+      className="no-drag"
+      title={title}
+      onClick={onClick}
+      style={{
+        width: 32, height: 32, flexShrink: 0,
+        display: "grid", placeItems: "center",
+        borderRadius: 9, cursor: "pointer",
+        background: danger ? "rgba(219,59,59,0.1)" : lt(0.05),
+        border: `1px solid ${danger ? "rgba(219,59,59,0.35)" : lt(0.1)}`,
+        color: danger ? "#C22F2F" : T.ink2,
+        marginLeft: 3,
+      }}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -696,9 +920,9 @@ function ControlBar({
       <CtrlBtn
         title={ttsEnabled ? "Voice on — click to mute" : "Voice off — click to enable"}
         onClick={onToggleVoice}
-        color={ttsEnabled ? T.accent : undefined}
+        color={ttsEnabled ? T.accentText : undefined}
       >
-        <IMic c={ttsEnabled ? T.accent : "currentColor"} />
+        <IMic c={ttsEnabled ? T.accentText : "currentColor"} />
       </CtrlBtn>
 
       <CtrlBtn
@@ -713,9 +937,9 @@ function ControlBar({
         <CtrlBtn
           title="Peek at last screenshot"
           onClick={onPeek}
-          color={showPeek ? T.accent : undefined}
+          color={showPeek ? T.accentText : undefined}
         >
-          <IExpand c={showPeek ? T.accent : "currentColor"} />
+          <IExpand c={showPeek ? T.accentText : "currentColor"} />
         </CtrlBtn>
       )}
 
@@ -751,15 +975,15 @@ function ControlBar({
       <span style={{
         display: "inline-flex", alignItems: "center", gap: 6,
         fontSize: 10, fontWeight: 700, letterSpacing: "0.06em",
-        color: T.accent, padding: "5px 10px", borderRadius: 999,
-        background: ar(T.accentRGB, 0.1), border: `1px solid ${ar(T.accentRGB, 0.22)}`,
+        color: T.accentText, padding: "5px 10px", borderRadius: 999,
+        background: ar(T.accentRGB, 0.14), border: `1px solid ${ar(T.accentRGB, 0.4)}`,
         flexShrink: 0,
       }}>
         <span style={{
-          width: 6, height: 6, borderRadius: "50%", background: T.accent,
+          width: 6, height: 6, borderRadius: "50%", background: T.accentDeep,
           boxShadow: `0 0 8px ${T.accent}`, animation: "sl-blink 1.6s ease-in-out infinite",
         }} />
-        AI LIVE
+        LIVE
       </span>
 
       {/* "I'm done — check my work" */}
@@ -933,9 +1157,9 @@ function CollapsedBar({
         <CtrlBtn
           title={ttsEnabled ? "Voice on — click to mute" : "Voice off — click to enable"}
           onClick={onToggleVoice}
-          color={ttsEnabled ? T.accent : undefined}
+          color={ttsEnabled ? T.accentText : undefined}
         >
-          <IMic c={ttsEnabled ? T.accent : "currentColor"} />
+          <IMic c={ttsEnabled ? T.accentText : "currentColor"} />
         </CtrlBtn>
         <button
           className="no-drag"

@@ -8,7 +8,7 @@ body,
   height: 100%;
   margin: 0;
   background: transparent;
-  color: #F1F4F8;
+  color: #23271C;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow: hidden;
@@ -39,15 +39,19 @@ textarea {
   width: 4px;
 }
 .sl-scroll::-webkit-scrollbar-thumb {
-  background: rgba(226, 232, 242, 0.12);
+  background: rgba(44, 48, 34, 0.22);
   border-radius: 2px;
 }
 .sl-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
 
+/* Window dragging is driven manually (pointerdown → main-process cursor
+   follow) because -webkit-app-region: drag is unreliable for transparent
+   frameless windows on Windows. .drag-region/.no-drag remain as markers the
+   pointer handler checks. */
 .drag-region {
-  -webkit-app-region: drag;
+  cursor: default;
 }
 .no-drag {
   -webkit-app-region: no-drag;
@@ -73,7 +77,7 @@ textarea {
 /* ── Slider (used in Settings.tsx) ── */
 .slider-range {
   appearance: none;
-  background: rgba(226, 232, 242, 0.08);
+  background: rgba(44, 48, 34, 0.12);
   height: 6px;
   border-radius: 9999px;
   outline: none;
@@ -104,6 +108,20 @@ textarea {
   0%   { transform: scale(0.6); opacity: 0.5; }
   80%  { transform: scale(2);   opacity: 0; }
   100% { transform: scale(2);   opacity: 0; }
+}
+
+/* ── The sight line — animated hairline under the header. Breathes while
+   watching, sweeps while thinking. Encodes status without a single word. ── */
+@keyframes sl-line-breathe {
+  0%, 100% { opacity: 0.35; }
+  50%      { opacity: 0.95; }
+}
+@keyframes sl-line-sweep {
+  from { background-position: -120% 0; }
+  to   { background-position: 220% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sl-sightline { animation: none !important; }
 }
 
 /* ── Settings slide-in ── */

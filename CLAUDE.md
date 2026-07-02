@@ -23,6 +23,7 @@ The app has a hard split between two TypeScript compilation targets:
 
 **Electron main process** (`electron/`, compiled by esbuild → `dist-electron/`)
 - `main.ts` — creates windows, registers all IPC handlers in `registerIpc()`, manages `glowWindow` and global input hook (`uiohook-napi`)
+- `calibrate.ts` + `calibrate-detect.ts` — **screen calibration**: on some Windows machines `desktopCapturer.source.display_id` silently refers to the WRONG monitor (exact-looking ID match, wrong pixels). At startup (and on display changes / `capture:recalibrate`) a magenta marker window is flashed on each display and the capture source containing it is detected by pixel ratio (`calibrate-detect.ts` is pure and unit-tested). Everything that pairs sources↔displays (capture, the glow overlay via `resolveWatchedDisplayId()`, the screen picker) trusts this map first, IDs only as fallback. `captureFrame` awaits calibration, so markers never leak into captured frames. **Never trust display_id/ID matching for new features — go through the calibration map.**
 - `claude.ts` — all Anthropic API calls; streams responses and emits sentence-level speech chunks mid-stream (via `speech-chunker.ts`) for early TTS
 - `speech-chunker.ts` — pure module (no imports); incrementally extracts the `"instruction"` JSON string from the stream and splits it into sentences, holding back abbreviations/domains; unit-tested from `src/__tests__/speechChunker.test.ts`
 - `capture.ts` — screenshot via Electron's `desktopCapturer`
@@ -49,7 +50,8 @@ The loop is a self-rescheduling `setTimeout` chain (not `setInterval`). Claude i
 - **Input trigger** — `uiohook-napi` global mouse/keyboard hook (750 ms debounce in main) → tick after 3.5 s of input silence (`useQuietPeriod`), skipped while TTS is playing
 - **Follow-up trigger** — submitting a follow-up fires a tick immediately in every mode and bypasses call spacing; a spoken thinking filler ("Let me take a look.") plays while Claude looks, with the answer queued behind it
 - **Guards** — `inFlightRef` (no concurrent calls), 5 s minimum spacing between Claude calls (`TS_MIN_CALL_SPACING_MS`), `rateLimitUntil` (API backoff). External callers invoking `tickRef.current()` inherit all of these
-- **Stall ladder** — when the screen has been still longer than the current step should take (`expected_pace`-scaled), a tick proceeds without a screen change so Claude can check in (at most once per minute)
+- **Stall ladder** — when the screen has been still longer than the current step should take (`expected_pace`-scaled), a tick proceeds without a screen change so Claude can check in (at most once per minute). A `diverted` (digression) state only suppresses this for `DIVERTED_STALL_MS` (2 min) — a false digression call must never silence the app forever
+- **Guaranteed first step** — the first tick after session start passes `sessionJustStarted`; the prompt forbids `wait` and `digression` on that turn, so the coach always speaks step 1 right after the plan overview
 
 Timing constants are locked by regression tests in `src/__tests__/sessionLoop.timing.test.ts` — changing one means updating the test deliberately.
 

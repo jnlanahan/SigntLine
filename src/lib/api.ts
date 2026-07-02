@@ -15,6 +15,7 @@ export type {
   Clarification,
   CaptureFrame,
   CaptureRegion,
+  CaptureTarget,
   ClarificationQuestion,
   ClarificationResponse,
   ConversationTurn,

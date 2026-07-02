@@ -17,7 +17,12 @@ import * as fs from "node:fs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { loadSettings, saveSettings } from "./settings-store";
-import { captureFrame, listDisplays } from "./capture";
+import { captureFrame, listCaptureTargets, listDisplays } from "./capture";
+import {
+  getCalibration,
+  initCalibration,
+  invalidateCalibration,
+} from "./calibrate";
 import {
   clearKey,
   hasKey,
@@ -102,33 +107,84 @@ let tray: Tray | null = null;
 let glowAdjusting = false;
 let inputDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
+// Manual window dragging. CSS -webkit-app-region: drag is unreliable for
+// transparent frameless windows on Windows, so the renderer reports
+// drag-start/end and we follow the cursor from the main process.
+let dragInterval: ReturnType<typeof setInterval> | null = null;
+// A real drag never lasts this long — hard stop so a missed pointerup can
+// never leave the window glued to the cursor ("floating down the screen").
+const DRAG_WATCHDOG_MS = 20_000;
+
+function startWindowDrag() {
+  if (!mainWindow || mainWindow.isDestroyed() || dragInterval) return;
+  const cursorStart = screen.getCursorScreenPoint();
+  const [winX, winY] = mainWindow.getPosition();
+  const startedAt = Date.now();
+  dragInterval = setInterval(() => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      stopWindowDrag();
+      return;
+    }
+    if (Date.now() - startedAt > DRAG_WATCHDOG_MS) {
+      console.warn("[drag] watchdog stop — pointerup was never delivered");
+      stopWindowDrag();
+      return;
+    }
+    const cursor = screen.getCursorScreenPoint();
+    mainWindow.setPosition(
+      winX + (cursor.x - cursorStart.x),
+      winY + (cursor.y - cursorStart.y),
+    );
+  }, 12);
+}
+
+function stopWindowDrag() {
+  if (dragInterval) {
+    clearInterval(dragInterval);
+    dragInterval = null;
+  }
+}
+
+// Accent palette for the glow overlay — mirrors src/design/theme.ts ACCENTS.
+const GLOW_ACCENTS: Record<string, { hex: string; rgb: string }> = {
+  lime: { hex: "#8FBE2E", rgb: "143,190,46" },
+  cobalt: { hex: "#4F8BF2", rgb: "79,139,242" },
+  rose: { hex: "#FF6B81", rgb: "255,107,129" },
+  slate: { hex: "#9FB2C8", rgb: "159,178,200" },
+};
+
+function currentGlowAccent(): { hex: string; rgb: string } {
+  return GLOW_ACCENTS[loadSettings().accentColor] ?? GLOW_ACCENTS.lime;
+}
+
 // The glow overlay renders an always-visible highlighted box marking the
 // capture region. In "adjust" mode the box becomes draggable/resizable so the
 // user can pick exactly what gets captured (e.g. one application window).
-const GLOW_HTML = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+// Colors follow the user's accent so the box visibly belongs to SightLine.
+const buildGlowHtml = (accent: { hex: string; rgb: string }) => `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
 *{margin:0;padding:0;box-sizing:border-box;user-select:none}
 html,body{width:100vw;height:100vh;overflow:hidden;background:transparent;
 font-family:system-ui,-apple-system,Segoe UI,sans-serif}
 #root{position:fixed;inset:0}
-#box{position:fixed;border:4px solid rgba(99,102,241,0.9);
-box-shadow:inset 0 0 70px 20px rgba(99,102,241,0.28),0 0 70px 20px rgba(99,102,241,0.28);
+#box{position:fixed;border:4px solid rgba(${accent.rgb},0.9);
+box-shadow:inset 0 0 70px 20px rgba(${accent.rgb},0.28),0 0 70px 20px rgba(${accent.rgb},0.28);
 animation:pulse 2.8s ease-in-out infinite}
 @keyframes pulse{0%,100%{opacity:0.5}50%{opacity:1}}
 .handle{position:absolute;width:16px;height:16px;background:#fff;
-border:2px solid rgba(99,102,241,1);border-radius:3px;display:none}
+border:2px solid rgba(${accent.rgb},1);border-radius:3px;display:none}
 #toolbar{position:fixed;left:50%;top:18px;transform:translateX(-50%);
 display:none;align-items:center;gap:10px;padding:8px 12px;border-radius:10px;
-background:rgba(17,17,23,0.92);border:1px solid rgba(99,102,241,0.5);
+background:rgba(17,17,23,0.92);border:1px solid rgba(${accent.rgb},0.5);
 color:#e5e7eb;font-size:13px;box-shadow:0 6px 24px rgba(0,0,0,0.5)}
 #toolbar button{font:inherit;cursor:pointer;border-radius:6px;padding:5px 10px;border:0}
-#size{color:#a5b4fc;font-variant-numeric:tabular-nums;min-width:96px;text-align:center}
-.btn-primary{background:#6366f1;color:#fff}
+#size{color:rgba(${accent.rgb},0.95);font-variant-numeric:tabular-nums;min-width:96px;text-align:center}
+.btn-primary{background:${accent.hex};color:#111}
 .btn-ghost{background:transparent;color:#cbd5e1;border:1px solid rgba(255,255,255,0.18)!important}
 /* view mode: pure visual border, fully click-through */
 #root[data-mode="view"] #box{pointer-events:none}
 /* adjust mode: dim everything outside the box, show handles + toolbar */
 #root[data-mode="adjust"] #box{cursor:move;animation:none;
-box-shadow:0 0 0 100000px rgba(0,0,0,0.5),inset 0 0 60px 12px rgba(99,102,241,0.35)}
+box-shadow:0 0 0 100000px rgba(0,0,0,0.5),inset 0 0 60px 12px rgba(${accent.rgb},0.35)}
 #root[data-mode="adjust"] .handle{display:block}
 #root[data-mode="adjust"] #toolbar{display:flex}
 .h-nw{top:-8px;left:-8px;cursor:nwse-resize}
@@ -294,10 +350,32 @@ function showGlowOverlay(displayId: string | null) {
   glowWindow.webContents.on("did-finish-load", () => broadcastGlowMode());
 
   void glowWindow.loadURL(
-    `data:text/html;charset=utf-8,${encodeURIComponent(GLOW_HTML)}`,
+    `data:text/html;charset=utf-8,${encodeURIComponent(buildGlowHtml(currentGlowAccent()))}`,
   );
 
   glowWindow.on("closed", () => { glowWindow = null; });
+}
+
+// The display id the glow should sit on = the display of the screen that is
+// ACTUALLY captured. Pinned source wins (via pixel-verified calibration);
+// stored displayId and primary are fallbacks.
+async function resolveWatchedDisplayId(): Promise<string | null> {
+  const s = loadSettings();
+  try {
+    const cal = await getCalibration();
+    if (s.selectedSourceId) {
+      const d = cal.sourceToDisplay.get(s.selectedSourceId);
+      if (d) return d;
+    }
+    if (s.selectedSourceName) {
+      const d = cal.nameToDisplay.get(s.selectedSourceName);
+      if (d) return d;
+    }
+  } catch (err) {
+    console.warn("[glow] calibration unavailable, using stored display:", err);
+  }
+  if (s.selectedDisplayId) return s.selectedDisplayId;
+  return String(screen.getPrimaryDisplay().id);
 }
 
 function hideGlowOverlay() {
@@ -308,9 +386,9 @@ function hideGlowOverlay() {
   glowAdjusting = false;
 }
 
-function setGlowAdjust(adjust: boolean) {
+async function setGlowAdjust(adjust: boolean) {
   if (!glowWindow || glowWindow.isDestroyed()) {
-    showGlowOverlay(loadSettings().selectedDisplayId);
+    showGlowOverlay(await resolveWatchedDisplayId());
   }
   if (!glowWindow) return;
   glowAdjusting = adjust;
@@ -380,12 +458,18 @@ function createWindow() {
   mainWindow.setOpacity(settings.opacity);
 
   // Save position/size whenever the user moves or resizes the window.
-  // Skipped while collapsed so the bar's stub size never gets persisted.
+  // Debounced — manual dragging emits "moved" continuously — and skipped
+  // while collapsed so the bar's stub size never gets persisted.
+  let saveBoundsTimer: ReturnType<typeof setTimeout> | null = null;
   const saveBounds = () => {
-    if (isCollapsed) return;
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      saveSettings({ windowBounds: mainWindow.getBounds() });
-    }
+    if (saveBoundsTimer) clearTimeout(saveBoundsTimer);
+    saveBoundsTimer = setTimeout(() => {
+      saveBoundsTimer = null;
+      if (isCollapsed) return;
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        saveSettings({ windowBounds: mainWindow.getBounds() });
+      }
+    }, 400);
   };
   mainWindow.on("moved", saveBounds);
   mainWindow.on("resized", saveBounds);
@@ -398,6 +482,7 @@ function createWindow() {
 
   mainWindow.on("closed", () => {
     hideGlowOverlay();
+    stopWindowDrag();
     uIOhook.stop();
     if (inputDebounceTimer) {
       clearTimeout(inputDebounceTimer);
@@ -432,10 +517,21 @@ app.whenReady().then(async () => {
   registerIpc();
   createWindow();
 
+  // Pixel-verified screen calibration: runs now (before the first capture)
+  // and re-runs when monitors change; each fresh result re-places the glow on
+  // the display that is ACTUALLY captured.
+  initCalibration(() => {
+    void resolveWatchedDisplayId().then((id) => {
+      if (glowWindow && !glowWindow.isDestroyed()) showGlowOverlay(id);
+    });
+  });
+
   // The capture-region glow is always visible while the app is running so the
   // user can see exactly what's being captured at any time.
-  showGlowOverlay(loadSettings().selectedDisplayId);
-  setGlowAdjust(false); // safety: ensure overlay is never stuck in interactive mode from a prior session
+  void resolveWatchedDisplayId().then((id) => {
+    showGlowOverlay(id);
+    void setGlowAdjust(false); // safety: never stuck in interactive mode from a prior session
+  });
 
   // Global input listener — debounced so rapid typing/clicking doesn't spam ticks
   function scheduleInputTick() {
@@ -447,6 +543,9 @@ app.whenReady().then(async () => {
   }
   uIOhook.on("click", scheduleInputTick);
   uIOhook.on("keyup", scheduleInputTick);
+  // Safety net for manual dragging: if the renderer's pointerup is ever
+  // missed, the global mouse-up still ends the drag.
+  uIOhook.on("mouseup", stopWindowDrag);
   uIOhook.start();
 
   // System tray — always-available quit fallback regardless of which view is open.
@@ -481,17 +580,27 @@ function registerIpc() {
     "settings:set",
     (_e: IpcMainInvokeEvent, patch: Record<string, unknown>) => {
       const prev = loadSettings();
+      // Switching screens invalidates any saved capture region — the region
+      // is in display-relative coordinates, so keeping it would silently crop
+      // a nonsense rectangle out of the new screen.
+      const screenChanged =
+        ("selectedDisplayId" in patch &&
+          patch.selectedDisplayId !== prev.selectedDisplayId) ||
+        ("selectedSourceId" in patch &&
+          patch.selectedSourceId !== prev.selectedSourceId);
+      if (screenChanged && !("captureRegion" in patch)) {
+        patch = { ...patch, captureRegion: null };
+      }
       const next = saveSettings(patch);
       if (mainWindow && typeof patch.opacity === "number") {
         mainWindow.setOpacity(next.opacity);
       }
-      // Moving the capture to a different display means the glow overlay has
-      // to be recreated on that display's bounds.
-      if (
-        "selectedDisplayId" in patch &&
-        next.selectedDisplayId !== prev.selectedDisplayId
-      ) {
-        showGlowOverlay(next.selectedDisplayId);
+      // Moving the capture to a different screen (or recoloring the accent)
+      // means the glow overlay has to be recreated.
+      const accentChanged =
+        "accentColor" in patch && next.accentColor !== prev.accentColor;
+      if (screenChanged || accentChanged) {
+        void resolveWatchedDisplayId().then(showGlowOverlay);
       } else if ("captureRegion" in patch) {
         // Region changed elsewhere (e.g. "Reset to full screen") — refresh the
         // glow so the visible box matches what's actually captured.
@@ -526,12 +635,34 @@ function registerIpc() {
 
   ipcMain.handle("displays:list", () => listDisplays());
 
+  ipcMain.handle("capture:list-targets", () => listCaptureTargets());
+
+  ipcMain.handle("capture:recalibrate", async () => {
+    invalidateCalibration();
+    let complete = false;
+    try {
+      const result = await getCalibration(true);
+      complete = result.complete;
+    } catch (err) {
+      console.warn("[calibrate] manual recalibration failed:", err);
+    }
+    void resolveWatchedDisplayId().then((id) => {
+      if (glowWindow && !glowWindow.isDestroyed()) showGlowOverlay(id);
+    });
+    return { complete };
+  });
+
   ipcMain.handle(
     "capture:once",
     async (_e: IpcMainInvokeEvent, payload: { displayId: string | null }) => {
+      const settings = loadSettings();
       return await captureFrame(
-        payload.displayId ?? null,
-        loadSettings().captureRegion ?? null,
+        {
+          displayId: payload.displayId ?? null,
+          sourceId: settings.selectedSourceId,
+          sourceName: settings.selectedSourceName,
+        },
+        settings.captureRegion ?? null,
       );
     },
   );
@@ -578,6 +709,7 @@ function registerIpc() {
         secondsSinceScreenChange?: number;
         secondsSinceLastSpoke?: number;
         stalled?: boolean;
+        sessionJustStarted?: boolean;
       },
     ) => {
       try {
@@ -716,6 +848,13 @@ function registerIpc() {
     app.quit();
   });
 
+  ipcMain.on("window:drag-start", () => startWindowDrag());
+  ipcMain.on("window:drag-end", () => stopWindowDrag());
+
+  ipcMain.handle("window:minimize", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.minimize();
+  });
+
   ipcMain.handle(
     "research:search",
     async (_e: IpcMainInvokeEvent, payload: { query: string }) => {
@@ -801,14 +940,13 @@ function registerIpc() {
 
   ipcMain.handle(
     "overlay:set-adjust",
-    (_e: IpcMainInvokeEvent, payload: { adjust: boolean }) => {
-      setGlowAdjust(Boolean(payload.adjust));
-    },
+    (_e: IpcMainInvokeEvent, payload: { adjust: boolean }) =>
+      setGlowAdjust(Boolean(payload.adjust)),
   );
 
   ipcMain.handle(
     "overlay:commit-region",
-    (
+    async (
       _e: IpcMainInvokeEvent,
       payload: {
         region: { x: number; y: number; width: number; height: number } | null;
@@ -816,19 +954,17 @@ function registerIpc() {
     ) => {
       const region = normalizeRegion(
         payload.region,
-        loadSettings().selectedDisplayId,
+        await resolveWatchedDisplayId(),
       );
       saveSettings({ captureRegion: region });
-      setGlowAdjust(false);
+      await setGlowAdjust(false);
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send("overlay:region-updated", region);
       }
     },
   );
 
-  ipcMain.handle("overlay:cancel-adjust", () => {
-    setGlowAdjust(false);
-  });
+  ipcMain.handle("overlay:cancel-adjust", () => setGlowAdjust(false));
 
   ipcMain.on("session:log", (_e, message: string) => {
     console.log("[renderer]", message);
