@@ -4,10 +4,12 @@ import { useSettings } from "../store/settings";
 import { api } from "../lib/api";
 import { hashFrame, hashesAreSimilar } from "../lib/frameHash";
 import {
-  useTts,
+  openSpeechStream,
   randomCompletionPhrase,
+  randomThinkingPhrase,
   waitForSpeechEnd,
   isSpeaking,
+  type SpeechStream,
 } from "./useTts";
 import { useQuietPeriod } from "./useQuietPeriod";
 import type { AppMode, StepPace } from "../lib/api";
@@ -17,11 +19,11 @@ const RETRY_DELAY_MS = 10_000;
 // Tech-support pacing. The loop looks at the screen often; Claude decides
 // each tick whether to speak ("instruct"/"acknowledge"/"check_in"/"done")
 // or stay silent ("wait"), so frequent ticks don't rush the user.
-const TS_MIN_CALL_SPACING_MS = 8_000;
+const TS_MIN_CALL_SPACING_MS = 5_000;
 const TS_BACKSTOP_MS = 15_000;
 const TS_SLOW_BACKSTOP_MS = 30_000;
 const TS_SLOW_AFTER_MS = 120_000; // screen still this long → slow backstop
-const TS_QUIET_PERIOD_MS = 4_000; // silence after input before a check
+const TS_QUIET_PERIOD_MS = 3_500; // silence after input before a check
 
 // How long the screen must be still before a stall tick (which lets Claude
 // check in), scaled by the expected pace of the current step.
@@ -100,15 +102,10 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
   const focusedRef = useRef(focused);
 
   const settings = useSettings((s) => s.settings);
-  const { speak } = useTts();
-  const speakRef = useRef(speak);
 
   useEffect(() => {
     focusedRef.current = focused;
   }, [focused]);
-  useEffect(() => {
-    speakRef.current = speak;
-  }, [speak]);
 
   const tick = useCallback(async () => {
     if (inFlightRef.current) return;
@@ -122,10 +119,13 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
     const cfg = getModeConfig(state.mode);
 
     // Minimum spacing between Claude calls. Stamped when the call is made,
-    // so a skipped or deduped response can never wedge the loop.
+    // so a skipped or deduped response can never wedge the loop. A pending
+    // follow-up bypasses the spacing — a direct question deserves a direct
+    // answer, not "in a few seconds".
     if (
       state.lastClaudeCallAt &&
-      now - state.lastClaudeCallAt < cfg.minCallSpacingMs
+      now - state.lastClaudeCallAt < cfg.minCallSpacingMs &&
+      !state.pendingFollowUp
     )
       return;
 
@@ -133,6 +133,18 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
     if (!cfg.requireScreenChange && !state.pendingFollowUp) return;
 
     inFlightRef.current = true;
+    // One speech stream per tick: the thinking filler (if any) plays first,
+    // then instruction sentences queue behind it as they stream in — nothing
+    // gets hard-cancelled mid-word within the same response. (Holder object
+    // because TS flow analysis can't see closure assignments to a `let`.)
+    const speech: { stream: SpeechStream | null } = { stream: null };
+    let unsubEarly: (() => void) | null = null;
+    const ttsOn = () => Boolean(useSettings.getState().settings?.ttsEnabled);
+    const speakOut = (text: string) => {
+      if (!ttsOn() || !text.trim()) return;
+      if (!speech.stream) speech.stream = openSpeechStream();
+      speech.stream.enqueue(text);
+    };
     try {
       // 1. Capture frame
       const displayId = useSettings.getState().settings?.selectedDisplayId ?? null;
@@ -191,16 +203,27 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
         useSession.getState().setPendingFollowUp(null);
       }
 
-      // Subscribe to early instruction event — fires as soon as the
-      // instruction field is complete in the Claude stream (never for "wait").
+      // The user asked a direct question and is now waiting on a multi-second
+      // vision call. A short spoken filler ("Let me take a look.") bridges the
+      // gap; the answer queues behind it in the same stream. Skipped while
+      // other audio is playing so we never cut ourselves off.
+      if (followUp && !isSpeaking()) {
+        speakOut(randomThinkingPhrase());
+      }
+
+      // Subscribe to sentence-level speech chunks — the first one fires as
+      // soon as the first sentence of the instruction exists in the Claude
+      // stream (never for "wait"), so speech starts while Claude is still
+      // writing the rest.
       let earlySpoken = false;
-      const unsubEarly = api().claude.onInstructionReady((earlyText) => {
-        const ttsOn = useSettings.getState().settings?.ttsEnabled;
-        if (ttsOn) {
-          speakRef.current(earlyText);
-          earlySpoken = true;
-          useSession.getState().setLastSpokeAt(Date.now());
-        }
+      unsubEarly = api().claude.onSpeechChunk((chunk) => {
+        if (!ttsOn()) return;
+        // While the user is off on a digression, stay quiet — the full
+        // response handler below decides if there's something new to say.
+        if (useSession.getState().diverted) return;
+        speakOut(chunk.text);
+        earlySpoken = true;
+        useSession.getState().setLastSpokeAt(Date.now());
       });
 
       const result = await api().claude.nextInstruction({
@@ -219,7 +242,6 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
           : undefined,
         stalled,
       });
-      unsubEarly();
 
       // Handle error envelope
       if (result && typeof result === "object" && "__error" in result) {
@@ -263,8 +285,6 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
         useSession.getState().appendAgentNote(result.notes.trim());
       }
 
-      const ttsEnabled = useSettings.getState().settings?.ttsEnabled;
-
       // Digression: user navigated away from the task. Speak the warm pause
       // message ONCE, then keep watching silently — the loop auto-resumes
       // when the screen shows the task again (no typed follow-up needed).
@@ -279,7 +299,7 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
             timestamp: Date.now(),
           });
           useSession.getState().setLastSpokeAt(Date.now());
-          if (ttsEnabled && !earlySpoken) speakRef.current(result.instruction);
+          if (!earlySpoken) speakOut(result.instruction);
         }
         useSession.getState().setStatus("watching");
         return;
@@ -324,7 +344,7 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
           useSession.getState().setLastSpokenInstruction(result.instruction);
           useSession.getState().setLastSpokeAt(Date.now());
           useSession.getState().setCurrentPace(result.expectedPace);
-          if (ttsEnabled && !earlySpoken) speakRef.current(result.instruction);
+          if (!earlySpoken) speakOut(result.instruction);
           break;
         }
 
@@ -339,7 +359,7 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
           if (action === "check_in") {
             useSession.getState().setLastCheckInAt(Date.now());
           }
-          if (ttsEnabled && !earlySpoken) speakRef.current(result.instruction);
+          if (!earlySpoken) speakOut(result.instruction);
           break;
         }
 
@@ -353,11 +373,10 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
           useSession.getState().setLastSpokenInstruction(result.instruction);
           useSession.getState().setLastSpokeAt(Date.now());
           useSession.getState().setDone(true);
-          if (ttsEnabled) {
-            speakRef.current(
-              `${result.instruction} ${randomCompletionPhrase()}`,
-            );
-          }
+          // If the instruction already streamed out, just add the wrap-up —
+          // it queues behind the still-playing sentences.
+          if (earlySpoken) speakOut(randomCompletionPhrase());
+          else speakOut(`${result.instruction} ${randomCompletionPhrase()}`);
           break;
         }
       }
@@ -396,6 +415,10 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
       useSession.getState().setStatus("watching");
       useSession.getState().setRateLimit(Date.now() + RETRY_DELAY_MS);
     } finally {
+      unsubEarly?.();
+      // Close the stream so waitForSpeechEnd() resolves once the queued
+      // audio drains. Anything already enqueued still plays to the end.
+      speech.stream?.end();
       inFlightRef.current = false;
     }
   }, [onNeedsApiKey]);
@@ -468,14 +491,14 @@ export function useSessionLoop(onNeedsApiKey: () => void, focused: boolean) {
     };
   }, [settings?.captureIntervalSec]);
 
-  // Teacher mode: restart the loop whenever a follow-up is submitted. Since
-  // the scheduled loop exits immediately (normalIntervalMs = 0), this is the
-  // only trigger for teacher-mode ticks.
+  // Fire a tick immediately whenever a follow-up is submitted, in every
+  // mode — a direct question shouldn't wait for the next poll. In teacher
+  // mode this is the ONLY trigger (the scheduled loop exits immediately,
+  // normalIntervalMs = 0).
   useEffect(() => {
     const unsub = useSession.subscribe((state, prev) => {
       if (state.pendingFollowUp === prev.pendingFollowUp) return;
       if (!state.pendingFollowUp) return;
-      if (state.mode !== "teacher") return;
       if (state.status !== "watching") return;
       void tickRef.current();
     });

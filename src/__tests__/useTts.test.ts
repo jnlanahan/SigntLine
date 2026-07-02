@@ -6,6 +6,7 @@ vi.mock("../lib/api", () => ({
     tts: {
       speak: vi.fn().mockResolvedValue({ __error: "not available in test" }),
     },
+    log: vi.fn(),
   }),
 }));
 

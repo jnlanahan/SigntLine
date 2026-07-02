@@ -1,18 +1,20 @@
 import textToSpeech from "@google-cloud/text-to-speech";
 
-// Chirp 3 HD voices — Google's newest, most natural generation (NotebookLM-style).
+// Chirp 3 HD voices — Google's most natural generation (NotebookLM-style).
+// Leda is the warmest, most conversational of the female voices — the best
+// fit for a coach sitting next to you — so it backs the default option.
 const VOICE_MAP: Record<string, string> = {
-  nova: "en-US-Chirp3-HD-Aoede",
-  coral: "en-US-Chirp3-HD-Aoede",
-  shimmer: "en-US-Chirp3-HD-Leda",
-  fable: "en-US-Chirp3-HD-Leda",
+  nova: "en-US-Chirp3-HD-Leda",
+  coral: "en-US-Chirp3-HD-Leda",
+  shimmer: "en-US-Chirp3-HD-Aoede",
+  fable: "en-US-Chirp3-HD-Aoede",
   onyx: "en-US-Chirp3-HD-Charon",
   alloy: "en-US-Chirp3-HD-Charon",
   echo: "en-US-Chirp3-HD-Puck",
   sage: "en-US-Chirp3-HD-Puck",
 };
 
-const DEFAULT_VOICE = "en-US-Chirp3-HD-Aoede";
+const DEFAULT_VOICE = "en-US-Chirp3-HD-Leda";
 
 export function hasGoogleCredentials(): boolean {
   return !!(

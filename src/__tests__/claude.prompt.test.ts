@@ -20,9 +20,25 @@ describe("Claude system prompt — TECH_SUPPORT_INTRO", () => {
   it("contains pacing instruction", async () => {
     const src = await import("../../electron/claude?raw");
     const content = (src as unknown as { default: string }).default;
-    // Either "one instruction" or "Pace yourself" must appear
+    // One-step-at-a-time pacing must be stated somewhere in the prompt.
     expect(
-      content.includes("one instruction") || content.includes("Pace yourself")
+      content.includes("one concrete step") || content.includes("Pace yourself")
     ).toBe(true);
+  });
+});
+
+describe("Claude system prompt — spoken-style rules", () => {
+  it("keeps responses short (60-word cap)", async () => {
+    const src = await import("../../electron/claude?raw");
+    expect((src as unknown as { default: string }).default).toContain(
+      "never more than 60 words"
+    );
+  });
+
+  it("asks for one idea per sentence (chunked-TTS friendly)", async () => {
+    const src = await import("../../electron/claude?raw");
+    expect((src as unknown as { default: string }).default).toContain(
+      "One idea per sentence"
+    );
   });
 });

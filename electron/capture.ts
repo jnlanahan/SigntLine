@@ -5,6 +5,10 @@ import type { CaptureFrame, CaptureRegion, DisplayInfo } from "./types";
 // Largest dimension we keep for the final vision payload. Cropping happens at
 // (near-)native resolution first, then we downscale to this for the API call.
 const MAX_PAYLOAD_WIDTH = 1280;
+// JPEG instead of PNG: 5-10x smaller payload for screenshots (the model sees
+// pixels, not encodings), which directly cuts upload time on every tick.
+// Quality stays >= 80 so small UI text remains legible.
+const JPEG_QUALITY = 82;
 // Cap the intermediate full-screen grab so 4K/5K displays don't blow up memory.
 const MAX_GRAB_WIDTH = 2560;
 
@@ -20,7 +24,7 @@ export function listDisplays(): DisplayInfo[] {
 }
 
 /**
- * Capture a single frame from a given display. Returned as a base64 PNG data
+ * Capture a single frame from a given display. Returned as a base64 JPEG data
  * URL — never written to disk. Caller owns disposal (drop the reference).
  */
 export async function captureFrame(
@@ -75,7 +79,7 @@ export async function captureFrame(
 
   const size = image.getSize();
   return {
-    dataUrl: image.toDataURL(),
+    dataUrl: `data:image/jpeg;base64,${image.toJPEG(JPEG_QUALITY).toString("base64")}`,
     timestamp: Date.now(),
     width: size.width,
     height: size.height,

@@ -65,7 +65,9 @@ export interface SightLineApi {
       clarifications: Clarification[];
       screenshot?: string;
     }): Promise<SessionPlan | { __error: string; message?: string }>;
-    onInstructionReady(cb: (text: string) => void): () => void;
+    // Fires once per completed sentence of the instruction while Claude's
+    // response is still streaming — lets TTS start on the first sentence.
+    onSpeechChunk(cb: (chunk: { text: string; index: number }) => void): () => void;
     evaluateGoal(args: {
       mode: AppMode;
       goal: string;
@@ -140,10 +142,13 @@ const api: SightLineApi = {
       ipcRenderer.invoke("claude:get-clarifications", args),
     getSessionPlan: (args) =>
       ipcRenderer.invoke("claude:get-session-plan", args),
-    onInstructionReady: (cb) => {
-      const handler = (_: Electron.IpcRendererEvent, text: string) => cb(text);
-      ipcRenderer.on("claude:instruction-ready", handler);
-      return () => ipcRenderer.removeListener("claude:instruction-ready", handler);
+    onSpeechChunk: (cb) => {
+      const handler = (
+        _: Electron.IpcRendererEvent,
+        chunk: { text: string; index: number },
+      ) => cb(chunk);
+      ipcRenderer.on("claude:speech-chunk", handler);
+      return () => ipcRenderer.removeListener("claude:speech-chunk", handler);
     },
     evaluateGoal: (args) => ipcRenderer.invoke("claude:evaluate-goal", args),
   },

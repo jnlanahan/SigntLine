@@ -23,6 +23,19 @@ export const COMPLETION_PHRASES = [
   "Goal achieved. See? Wasn't so bad.",
 ];
 
+// Spoken immediately after the user asks a question, while Claude is looking
+// at the screen. Research on conversational fillers shows they meaningfully
+// improve perceived responsiveness for waits over ~3s — which is exactly the
+// length of a vision call. The real answer queues BEHIND the filler in the
+// same speech stream, so the filler is never cut off mid-word.
+export const THINKING_PHRASES = [
+  "Let me take a look.",
+  "Hmm, let me see.",
+  "Good question — one sec.",
+  "Let me check that.",
+  "Okay, looking now.",
+];
+
 function pickRandom<T>(arr: readonly T[], avoid?: T): T {
   if (arr.length === 1) return arr[0];
   let next = arr[Math.floor(Math.random() * arr.length)];
@@ -34,6 +47,7 @@ function pickRandom<T>(arr: readonly T[], avoid?: T): T {
 
 let lastWaitingPhrase: string | undefined;
 let lastCompletionPhrase: string | undefined;
+let lastThinkingPhrase: string | undefined;
 
 export function randomWaitingPhrase(): string {
   lastWaitingPhrase = pickRandom(WAITING_PHRASES, lastWaitingPhrase);
@@ -45,12 +59,18 @@ export function randomCompletionPhrase(): string {
   return lastCompletionPhrase;
 }
 
+export function randomThinkingPhrase(): string {
+  lastThinkingPhrase = pickRandom(THINKING_PHRASES, lastThinkingPhrase);
+  return lastThinkingPhrase;
+}
+
 // Module-level audio state so cancel() works across renders.
 let currentAudio: HTMLAudioElement | null = null;
 let speakGeneration = 0;
-// True from speak() until the audio definitively ends (including the 1-2s
-// cloud-synthesis fetch, when no audio element exists yet) — so callers
-// checking isSpeaking() can't fire a tick that cancels still-loading audio.
+// True from stream open until every queued chunk has finished playing
+// (including the cloud-synthesis fetch window, when no audio element exists
+// yet) — so callers checking isSpeaking() can't fire a tick that cancels
+// still-loading audio.
 let pendingSpeech = false;
 type TtsMode = "google" | "openai" | "system" | "none" | null;
 let lastTtsMode: TtsMode = null;
@@ -65,7 +85,7 @@ function recordTtsMode(mode: TtsMode) {
 let speakDoneResolve: (() => void) | null = null;
 let speakDonePromise: Promise<void> = Promise.resolve();
 
-export function waitForSpeechEnd(maxWaitMs = 30_000): Promise<void> {
+export function waitForSpeechEnd(maxWaitMs = 45_000): Promise<void> {
   // Safety net: never let a caller hang forever on a speech promise that a
   // future bug fails to resolve.
   return Promise.race([
@@ -104,7 +124,13 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   ]);
 }
 
-async function playCloud(text: string, gen: number): Promise<boolean> {
+type CloudAudio =
+  | { ok: true; audioBase64: string; engine: "google" | "openai" }
+  | { ok: false; message: string };
+
+// Kick off cloud synthesis for one chunk. Called the moment a chunk is
+// enqueued, so chunk N+1 synthesizes while chunk N is still playing.
+async function fetchCloudAudio(text: string): Promise<CloudAudio> {
   try {
     const voice = useSettings.getState().settings?.ttsVoice;
     // Bound the IPC round-trip. The main process already times out each TTS
@@ -115,64 +141,71 @@ async function playCloud(text: string, gen: number): Promise<boolean> {
       18_000,
       "tts_ipc_timeout",
     );
-    if (gen !== speakGeneration) return true; // cancelled while waiting
     if ("__error" in result) {
       const msg = (result as { message?: string }).message ?? "";
       console.warn("[SightLine TTS] cloud TTS error:", result.__error, msg);
       api().log(`[tts] cloud error: ${result.__error} ${msg}`.trim());
-      return false;
+      return { ok: false, message: msg || result.__error };
     }
+    return { ok: true, audioBase64: result.audioBase64, engine: result.engine };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn("[SightLine TTS] cloud TTS failed:", err);
+    api().log(`[tts] cloud failed: ${msg}`);
+    return { ok: false, message: msg };
+  }
+}
 
-    const bytes = Uint8Array.from(atob(result.audioBase64), (c) => c.charCodeAt(0));
+// Play one synthesized chunk to completion. Resolves true if the audio
+// played (or was cancelled mid-play), false if playback couldn't start —
+// the caller then falls back to web speech.
+function playAudioBuffer(
+  audioBase64: string,
+  engine: "google" | "openai",
+  gen: number,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (gen !== speakGeneration) {
+      resolve(true); // cancelled while synthesizing
+      return;
+    }
+    const bytes = Uint8Array.from(atob(audioBase64), (c) => c.charCodeAt(0));
     const blob = new Blob([bytes], { type: "audio/mp3" });
     const blobUrl = URL.createObjectURL(blob);
     const audio = new Audio(blobUrl);
-    if (gen !== speakGeneration) {
-      URL.revokeObjectURL(blobUrl);
-      return true; // cancelled after IPC returned
-    }
     currentAudio = audio;
 
-    // Shared end-of-life cleanup for ended/error/abort, so a failed audio
-    // element can never leave isSpeaking() stuck true or the session loop
-    // hanging on waitForSpeechEnd().
+    // Shared end-of-life cleanup for ended/error/abort so a failed audio
+    // element can never leave the queue pump hanging.
+    let settled = false;
     const finish = (reason: string) => {
+      if (settled) return;
+      settled = true;
       URL.revokeObjectURL(blobUrl);
       if (currentAudio === audio) currentAudio = null;
-      // Only resolve if this is still the active speech (gen guard prevents
-      // a stale event from resolving a newer instruction's promise).
-      if (gen === speakGeneration) {
-        pendingSpeech = false;
-        speakDoneResolve?.();
-        speakDoneResolve = null;
-        if (reason !== "ended") {
-          console.warn(`[SightLine TTS] audio ${reason} (gen ${gen})`);
-          api().log(`[tts] audio ${reason} (gen ${gen})`);
-        } else {
-          api().log(`[tts] audio ended (gen ${gen})`);
-        }
+      if (reason !== "ended" && gen === speakGeneration) {
+        console.warn(`[SightLine TTS] audio ${reason} (gen ${gen})`);
+        api().log(`[tts] audio ${reason} (gen ${gen})`);
       }
+      resolve(true);
     };
     audio.onended = () => finish("ended");
     audio.onerror = () => finish("error");
     audio.onabort = () => finish("abort");
 
-    try {
-      await audio.play();
-      recordTtsMode(result.engine);
-      return true;
-    } catch (playErr) {
-      // Autoplay blocked or decode error — fall through to Web Speech.
-      console.warn("[SightLine TTS] audio.play() failed:", playErr);
-      currentAudio = null;
-      return false;
-    }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn("[SightLine TTS] cloud TTS failed:", err);
-    api().log(`[tts] cloud failed: ${msg}`);
-    return false;
-  }
+    audio.play().then(
+      () => recordTtsMode(engine),
+      (playErr) => {
+        // Autoplay blocked or decode error — let the caller fall back.
+        console.warn("[SightLine TTS] audio.play() failed:", playErr);
+        if (settled) return;
+        settled = true;
+        URL.revokeObjectURL(blobUrl);
+        if (currentAudio === audio) currentAudio = null;
+        resolve(false);
+      },
+    );
+  });
 }
 
 function playWebSpeech(text: string) {
@@ -230,38 +263,111 @@ function preprocessForTts(text: string): string {
     .replace(/\.{3}$/, ".");
 }
 
+// A speech stream: sentences are enqueued as they arrive (from the streaming
+// Claude response) and played strictly in order. Synthesis of chunk N+1
+// starts the moment it's enqueued — while chunk N is still playing — so the
+// gap between sentences is just the natural sentence pause.
+export interface SpeechStream {
+  enqueue(text: string): void;
+  // No more chunks coming. waitForSpeechEnd() resolves once the queue drains.
+  end(): void;
+}
+
+export function openSpeechStream(): SpeechStream {
+  cancelCurrent(); // resolves previous promise, increments generation
+  const gen = speakGeneration;
+  pendingSpeech = true;
+  speakDonePromise = new Promise<void>((resolve) => {
+    speakDoneResolve = resolve;
+  });
+  lastTtsMode = null;
+
+  interface QueueItem {
+    text: string;
+    audioPromise: Promise<CloudAudio>;
+  }
+  const queue: QueueItem[] = [];
+  let ended = false;
+  let pumping = false;
+  // Once one chunk falls back to the system voice, all later chunks in this
+  // stream do too — speechSynthesis queues utterances natively, and mixing
+  // voices mid-stream sounds broken.
+  let degraded = false;
+
+  const finishAll = () => {
+    if (gen !== speakGeneration) return;
+    pendingSpeech = false;
+    speakDoneResolve?.();
+    speakDoneResolve = null;
+    api().log(`[tts] stream drained (gen ${gen})`);
+  };
+
+  async function pump(): Promise<void> {
+    if (pumping) return;
+    pumping = true;
+    try {
+      while (queue.length > 0) {
+        if (gen !== speakGeneration) return; // cancelled
+        const item = queue.shift()!;
+        const result = degraded
+          ? ({ ok: false, message: "degraded" } as const)
+          : await item.audioPromise;
+        if (gen !== speakGeneration) return;
+        if (result.ok) {
+          const played = await playAudioBuffer(
+            result.audioBase64,
+            result.engine,
+            gen,
+          );
+          if (played) continue;
+        }
+        if (!degraded) {
+          degraded = true;
+          api().log(`[tts] falling back to web speech (gen ${gen})`);
+        }
+        if (typeof window !== "undefined" && window.speechSynthesis) {
+          playWebSpeech(item.text);
+        } else {
+          recordTtsMode("none");
+        }
+      }
+      // Web Speech has no reliable end signal — once degraded, resolve as
+      // soon as everything is handed off, matching the old behavior.
+      if (ended && gen === speakGeneration) finishAll();
+    } finally {
+      pumping = false;
+      if (gen === speakGeneration && queue.length > 0) void pump();
+    }
+  }
+
+  return {
+    enqueue(text: string) {
+      if (gen !== speakGeneration || ended) return;
+      const trimmed = preprocessForTts(text.trim());
+      if (!trimmed) return;
+      api().log(`[tts] enqueue (gen ${gen}): "${trimmed.slice(0, 40)}"`);
+      queue.push({
+        text: trimmed,
+        audioPromise: degraded
+          ? Promise.resolve({ ok: false, message: "degraded" })
+          : fetchCloudAudio(trimmed),
+      });
+      void pump();
+    },
+    end() {
+      if (gen !== speakGeneration || ended) return;
+      ended = true;
+      if (!pumping && queue.length === 0) finishAll();
+    },
+  };
+}
+
 export function useTts() {
   function speak(text: string) {
-    const trimmed = preprocessForTts(text.trim());
-    if (!trimmed) return;
-    cancelCurrent(); // resolves previous promise, increments generation
-    pendingSpeech = true; // covers the cloud-synthesis fetch window too
-    // Create new completion promise for this speech instance.
-    speakDonePromise = new Promise<void>((resolve) => {
-      speakDoneResolve = resolve;
-    });
-    lastTtsMode = null;
-    const gen = speakGeneration;
-    api().log(`[tts] speak start (gen ${gen}): "${trimmed.slice(0, 40)}"`);
-
-    void playCloud(trimmed, gen).then((used) => {
-      if (!used && gen === speakGeneration) {
-        api().log(`[tts] falling back to web speech (gen ${gen})`);
-        playWebSpeech(trimmed);
-        // Web Speech has no reliable end event — resolve immediately so the
-        // session loop isn't stuck waiting indefinitely.
-        pendingSpeech = false;
-        speakDoneResolve?.();
-        speakDoneResolve = null;
-      } else if (!used) {
-        recordTtsMode("none");
-        pendingSpeech = false;
-        speakDoneResolve?.();
-        speakDoneResolve = null;
-      }
-      // If used=true: audio is playing; finish() will resolve the promise.
-      // If gen !== speakGeneration: cancelCurrent() already resolved it.
-    });
+    if (!text.trim()) return;
+    const stream = openSpeechStream();
+    stream.enqueue(text);
+    stream.end();
   }
 
   function cancel() {

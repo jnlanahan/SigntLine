@@ -26,8 +26,8 @@ function secToTier(sec: number): number {
 }
 
 const VOICE_OPTIONS: { id: TtsVoiceId; label: string; sample: string }[] = [
-  { id: "nova",    label: "Ava — natural female (recommended)", sample: "Hey, I'm Ava. Ready when you are." },
-  { id: "shimmer", label: "Leda — natural female",              sample: "Hi there — let's walk through this together." },
+  { id: "nova",    label: "Ava — warm female (recommended)", sample: "Hey, I'm Ava. Ready when you are." },
+  { id: "shimmer", label: "Iris — calm female",              sample: "Hi there — let's walk through this together." },
   { id: "onyx",    label: "Charlie — natural male (recommended)", sample: "Alright. Let's take it one step at a time." },
   { id: "echo",    label: "Puck — natural male",                sample: "Hey, let me know when you're ready to go." },
 ];

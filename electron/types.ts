@@ -24,7 +24,7 @@ export interface ConversationTurn {
 }
 
 export interface CaptureFrame {
-  // base64-encoded PNG, kept in-memory only
+  // base64-encoded image data URL (JPEG), kept in-memory only
   dataUrl: string;
   timestamp: number;
   width: number;

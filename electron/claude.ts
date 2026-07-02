@@ -10,10 +10,13 @@ import type {
   SessionPlan,
 } from "./types";
 import { getKey } from "./credentials";
+import { InstructionChunker, type SpeechChunk } from "./speech-chunker";
 
 const MODEL = "claude-sonnet-4-6";
 const MAX_TOKENS = 800;
-const MAX_FRAMES = 5;
+// 3 frames ≈ 25s of visual history at normal pacing; each extra frame adds
+// ~1.3k tokens of prefill (≈ slower time-to-first-token on every tick).
+const MAX_FRAMES = 3;
 
 // Per-mode role intros. The voice + output rules are shared so the rest of the
 // streaming/parsing pipeline is identical across modes.
@@ -62,7 +65,9 @@ Rules:
 const VOICE_RULES = `Voice rules (spoken text comes through TTS, so prefer short conversational sentences with natural rhythm):
 - Sound like a human, not a script. Use contractions ("you'll", "it's", "let's", "we'll"). Drop filler openers like "Now," or "Please." Speak like you're sitting next to the person.
 - Make instructions feel like suggestions, not commands. "Go ahead and click…" beats "Click…". "You'll want to…" beats "You must…".
-- Keep responses tight — usually 2 to 4 short sentences, never more than 80 words.
+- Keep responses tight — usually 1 to 3 short sentences, never more than 60 words. Spoken words vanish fast; less per turn is easier to follow.
+- One idea per sentence. Short sentences with real punctuation are what make the voice sound human — long compound sentences are the #1 robotic tell.
+- Anchor, then act: name what to look for before saying what to do with it. "See the blue Export button, top right? Click that — it'll open a save dialog." Then stop.
 - One action per response. Don't chain two separate clicks into one message. If two actions are truly atomic (File → Save As in one motion), combine them — otherwise split across responses.
 - End on a natural landing point. Don't trail off mid-clause — "Go ahead and click the gear icon." not "...and once that opens you'll want to look for…"
 - Vary your openers. Mix: "Okay, go ahead and…", "Cool — next up…", "Alright, now…", "Nice. Then…", "From here, just…", "Quick one —", "Easy part:", "Go ahead and…". Never repeat the same opener twice in a row.
@@ -84,7 +89,7 @@ const SHARED_FIELD_RULES = `- "completed_steps" is the full running list as shor
 const OUTPUT_RULES = `Output rules:
 - Respond with a JSON object only, no prose around it, no code fences.
 - Schema: {"instruction": string, "completed_steps": string[], "upcoming_steps": string[], "digression": boolean, "done": boolean, "needsResearch": boolean, "researchQuery": string, "notes": string}
-- "instruction" is your next message to the user — conversational tone, under 80 words.
+- "instruction" is your next message to the user — conversational tone, under 60 words.
 - "done" follows the mode rules above; write a short, punchy wrap-up when done and give no further steps.
 ${SHARED_FIELD_RULES}`;
 
@@ -94,7 +99,7 @@ const TECH_SUPPORT_OUTPUT_RULES = `Output rules:
 - Output the "action" key FIRST, before everything else.
 - "action" is your pacing decision per the mode rules above. When action is "wait", set instruction to an empty string.
 - "expected_pace" applies to the step you're giving in an "instruct" — "medium" otherwise.
-- "instruction" is your next message to the user — conversational tone, under 80 words. Empty string when action is "wait".
+- "instruction" is your next message to the user — conversational tone, under 60 words. Empty string when action is "wait".
 ${SHARED_FIELD_RULES}`;
 
 const MODE_INTROS: Record<AppMode, string> = {
@@ -147,9 +152,11 @@ export interface NextInstructionArgs {
 
 export async function getNextInstruction(
   args: NextInstructionArgs,
-  // Optional: called as soon as the instruction field is extracted from the
-  // stream, before the full JSON is parsed — lets the caller start TTS early.
-  onInstructionReady?: (instruction: string) => void,
+  // Optional: called with each completed sentence of the "instruction" field
+  // while the response is still streaming — lets the caller start TTS on the
+  // first sentence instead of waiting for the full JSON. Never fires for a
+  // "wait" action.
+  onSpeechChunk?: (chunk: SpeechChunk) => void,
 ): Promise<InstructionResponse> {
   const apiKey = await getKey("anthropic");
   if (!apiKey) throw new MissingApiKeyError();
@@ -177,7 +184,7 @@ export async function getNextInstruction(
       type: "image",
       source: {
         type: "base64",
-        media_type: "image/png",
+        media_type: mediaTypeOf(f.dataUrl),
         data: stripDataUrlPrefix(f.dataUrl),
       },
     });
@@ -195,18 +202,41 @@ export async function getNextInstruction(
     { role: "user", content: userBlocks },
   ];
 
-  // Regexes to capture fields as they accumulate in the stream. "action" is
-  // emitted first (per the output rules) so we can gate early TTS on it —
-  // a "wait" must never speak.
-  const instructionRe = /"instruction"\s*:\s*"((?:[^"\\]|\\.)*)"/;
+  // Sentence-level early TTS. "action" is emitted first (per the output
+  // rules) so we can gate speech on it — a "wait" must never speak. In
+  // tech_support mode chunks are held until the action is known; the other
+  // modes have no action key, so chunks flow immediately.
   const actionRe = /"action"\s*:\s*"(\w+)"/;
-  let earlyFired = false;
+  const chunker = new InstructionChunker();
+  let gateOpen = args.mode !== "tech_support";
+  let gateClosed = false; // action === "wait" — drop everything
+  const held: SpeechChunk[] = [];
+  const emitChunks = (chunks: SpeechChunk[]) => {
+    if (gateClosed || !onSpeechChunk) return;
+    for (const c of chunks) {
+      if (gateOpen) onSpeechChunk(c);
+      else held.push(c);
+    }
+  };
+  const openGate = () => {
+    gateOpen = true;
+    if (onSpeechChunk) for (const c of held.splice(0)) onSpeechChunk(c);
+  };
 
   try {
     const stream = client.messages.stream({
       model: MODEL,
       max_tokens: MAX_TOKENS,
-      system: systemPromptFor(args.mode),
+      // Cache the (byte-identical across ticks) system prompt — cuts
+      // time-to-first-token and cost on every poll. Cast because the SDK
+      // types in use predate GA prompt caching; the API accepts it.
+      system: [
+        {
+          type: "text",
+          text: systemPromptFor(args.mode),
+          cache_control: { type: "ephemeral" },
+        } as unknown as Anthropic.Messages.TextBlockParam,
+      ],
       messages,
     });
 
@@ -217,21 +247,24 @@ export async function getNextInstruction(
         chunk.delta.type === "text_delta"
       ) {
         accumulated += chunk.delta.text;
-        if (!earlyFired && onInstructionReady) {
-          const m = instructionRe.exec(accumulated);
+        if (!gateOpen && !gateClosed) {
+          const m = actionRe.exec(accumulated);
           if (m) {
-            earlyFired = true;
-            const actionMatch = actionRe.exec(accumulated);
-            const earlyAction = actionMatch?.[1];
-            // Unescape JSON string escapes in the captured value.
-            const early = m[1].replace(/\\n/g, " ").replace(/\\(.)/g, "$1");
-            if (earlyAction !== "wait" && early.trim().length > 0) {
-              onInstructionReady(early);
+            if (m[1] === "wait") {
+              gateClosed = true;
+              held.length = 0;
+            } else {
+              openGate();
             }
           }
         }
+        emitChunks(chunker.push(accumulated));
       }
     }
+    // Stream done. If the action never appeared (schema drift), speak rather
+    // than stay silent — matching parseInstruction's "instruct" default.
+    if (!gateOpen && !gateClosed) openGate();
+    emitChunks(chunker.finish());
 
     const resp = await stream.finalMessage();
     const text = extractText(resp);
@@ -330,6 +363,13 @@ function extractText(resp: Anthropic.Messages.Message): string {
 function stripDataUrlPrefix(dataUrl: string): string {
   const comma = dataUrl.indexOf(",");
   return comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+}
+
+type ImageMediaType = "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+
+function mediaTypeOf(dataUrl: string): ImageMediaType {
+  const m = /^data:(image\/(?:png|jpeg|webp|gif));/.exec(dataUrl);
+  return (m?.[1] as ImageMediaType) ?? "image/png";
 }
 
 const VALID_ACTIONS = new Set(["instruct", "wait", "acknowledge", "check_in", "done"]);
@@ -499,7 +539,7 @@ export async function getSessionPlan(args: {
       type: "image",
       source: {
         type: "base64",
-        media_type: "image/png",
+        media_type: mediaTypeOf(args.screenshot),
         data: stripDataUrlPrefix(args.screenshot),
       },
     });
@@ -579,7 +619,7 @@ export async function getGoalEvaluation(args: {
     type: "image" as const,
     source: {
       type: "base64" as const,
-      media_type: "image/png" as const,
+      media_type: mediaTypeOf(f.dataUrl),
       data: f.dataUrl.replace(/^data:image\/\w+;base64,/, ""),
     },
   }));

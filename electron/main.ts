@@ -581,9 +581,9 @@ function registerIpc() {
       },
     ) => {
       try {
-        return await getNextInstruction(args, (instruction) => {
+        return await getNextInstruction(args, (chunk) => {
           if (!e.sender.isDestroyed()) {
-            e.sender.send("claude:instruction-ready", instruction);
+            e.sender.send("claude:speech-chunk", chunk);
           }
         });
       } catch (err) {

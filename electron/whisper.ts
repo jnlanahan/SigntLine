@@ -24,11 +24,25 @@ export async function transcribe(args: TranscribeArgs): Promise<string> {
   const file = await OpenAI.toFile(buffer, `audio.${ext}`, {
     type: args.mimeType,
   });
-  const result = await client.audio.transcriptions.create({
-    model: "whisper-1",
-    file,
-  });
-  return result.text.trim();
+  // gpt-4o-mini-transcribe is faster and more accurate than whisper-1 for
+  // short voice commands; fall back if the account lacks access.
+  try {
+    const result = await client.audio.transcriptions.create({
+      model: "gpt-4o-mini-transcribe",
+      file,
+    });
+    return result.text.trim();
+  } catch (err) {
+    const status = (err as { status?: number })?.status;
+    if (status === 403 || status === 404 || status === 400 || status === 422) {
+      const result = await client.audio.transcriptions.create({
+        model: "whisper-1",
+        file,
+      });
+      return result.text.trim();
+    }
+    throw err;
+  }
 }
 
 function pickExtension(mime: string): string {
