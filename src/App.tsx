@@ -168,11 +168,6 @@ export default function App() {
     setEvalResult(null);
   }, [instruction]);
 
-  // Session complete → give the desktop back.
-  useEffect(() => {
-    if (done) void api().dock.set(false);
-  }, [done]);
-
   async function toggleCollapsed() {
     const next = !collapsed;
     if (next) {
@@ -206,11 +201,8 @@ export default function App() {
     useSession.getState().setLastSpokeAt(Date.now());
     useSession.getState().setLastScreenChangeAt(Date.now());
     setStatus("watching");
-    // Coach Mode: dock beside the watched screen for the session. Falls back
-    // to floating silently if the AppBar layer is unavailable.
-    if (useSettings.getState().settings?.dockEnabled) {
-      void api().dock.set(true);
-    }
+    // Docking is persistent (driven by the dockEnabled setting + launch), so
+    // there's nothing to toggle here — the sidebar is already in place.
   }
 
   function pause() {
@@ -230,7 +222,8 @@ export default function App() {
     setShowPeek(false);
     setShowStopConfirm(false);
     setEvalResult(null);
-    void api().dock.set(false);
+    // Stay docked — the sidebar is the persistent home, not a per-session
+    // takeover. The user leaves docked mode via the header/Settings toggle.
   }
 
   async function markDone() {
@@ -352,8 +345,10 @@ export default function App() {
         status={status}
         mode={mode}
         showSpinner={showSpinner}
+        docked={docked}
         ttsEnabled={settings?.ttsEnabled ?? false}
         onToggleVoice={toggleVoice}
+        onToggleDock={() => void patchSettings({ dockEnabled: !docked })}
         onOpenSettings={openSettings}
         onAdjustCapture={() => { void api().overlay.setAdjust(true); }}
         onCollapse={() => void toggleCollapsed()}
@@ -879,8 +874,10 @@ function PanelHeader({
   status,
   mode,
   showSpinner,
+  docked,
   ttsEnabled,
   onToggleVoice,
+  onToggleDock,
   onOpenSettings,
   onAdjustCapture,
   onCollapse,
@@ -890,8 +887,10 @@ function PanelHeader({
   status: SessionStatus;
   mode: AppMode | null;
   showSpinner: boolean;
+  docked: boolean;
   ttsEnabled: boolean;
   onToggleVoice(): void;
+  onToggleDock(): void;
   onOpenSettings(): void;
   onAdjustCapture(): void;
   onCollapse(): void;
@@ -980,6 +979,12 @@ function PanelHeader({
         </CtrlBtn>
         <CtrlBtn title="Adjust capture area" onClick={onAdjustCapture}>
           <CropIcon />
+        </CtrlBtn>
+        <CtrlBtn
+          title={docked ? "Undock — float the window" : "Dock to the side of the screen"}
+          onClick={onToggleDock}
+        >
+          <DockIcon active={docked} />
         </CtrlBtn>
         {targets.length > 1 && (
           <CtrlBtn
@@ -1514,6 +1519,19 @@ function CropIcon() {
     <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
       <path d="M3 1.5v9h9" stroke={T.ink2} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
       <path d="M1.5 3h9v9" stroke={T.ink2} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" strokeDasharray="2.5 1.5" />
+    </svg>
+  );
+}
+
+// A screen with a filled left rail — the docked-sidebar glyph. Filled when
+// docked, outline-only when floating.
+function DockIcon({ active }: { active: boolean }) {
+  const T = useTheme();
+  const c = active ? T.accent : T.ink2;
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+      <rect x="1.5" y="2.5" width="11" height="9" rx="1.5" stroke={c} strokeWidth="1.4" />
+      <rect x="1.5" y="2.5" width="4" height="9" rx="1.5" fill={c} fillOpacity={active ? 0.9 : 0.35} />
     </svg>
   );
 }

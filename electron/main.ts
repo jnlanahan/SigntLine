@@ -595,8 +595,23 @@ app.whenReady().then(async () => {
   initCalibration(() => {
     void resolveWatchedDisplayId().then((id) => {
       if (glowWindow && !glowWindow.isDestroyed()) showGlowOverlay(id);
+      // If we're docked but calibration just re-identified the watched screen
+      // as a different monitor, follow it (display_id lies on this machine —
+      // this is how the sidebar lands on the RIGHT monitor after the initial
+      // dock to primary).
+      if (wantsDock && isDocked() && getDockRectDip()?.displayId !== id) {
+        void dockToWatchedDisplay();
+      }
     });
   });
+
+  // Coach Mode: the docked sidebar is the default view — reserve the strip as
+  // soon as the app is up, not just during sessions. Falls back to a floating
+  // window automatically if the AppBar layer is unavailable.
+  if (loadSettings().dockEnabled) {
+    wantsDock = true;
+    void dockToWatchedDisplay();
+  }
 
   // The capture-region glow is always visible while the app is running so the
   // user can see exactly what's being captured at any time.
@@ -672,6 +687,26 @@ function registerIpc() {
       const next = saveSettings(patch);
       if (mainWindow && typeof patch.opacity === "number" && !isDocked()) {
         mainWindow.setOpacity(next.opacity);
+      }
+      // Toggling "dock to the side" from Settings docks/undocks live so the
+      // change is visible immediately, not on next launch.
+      if ("dockEnabled" in patch && next.dockEnabled !== prev.dockEnabled) {
+        wantsDock = next.dockEnabled;
+        if (next.dockEnabled) {
+          void dockToWatchedDisplay();
+        } else {
+          undockWindow();
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.setOpacity(next.opacity);
+          }
+        }
+      } else if ("dockSide" in patch && patch.dockSide !== prev.dockSide && isDocked()) {
+        // Re-dock on the other edge.
+        void dockToWatchedDisplay();
+      } else if (screenChanged && isDocked()) {
+        // The coach must sit beside the work it's watching — when the user
+        // switches monitors, move the docked strip to the new screen.
+        void dockToWatchedDisplay();
       }
       // Moving the capture to a different screen (or recoloring the accent)
       // means the glow overlay has to be recreated.
