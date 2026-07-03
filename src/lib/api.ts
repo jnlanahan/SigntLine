@@ -20,6 +20,8 @@ export type {
   ClarificationResponse,
   ConversationTurn,
   DisplayInfo,
+  DockSide,
+  DockState,
   InstructionAction,
   InstructionResponse,
   SessionPlan,

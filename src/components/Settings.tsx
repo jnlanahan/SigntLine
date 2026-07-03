@@ -279,6 +279,38 @@ export function Settings({ onClose }: Props) {
           />
         </div>
 
+        {/* Docking */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <span style={sectionLabel}>Docking</span>
+          <ToggleRow
+            T={T}
+            label="Dock to the side during sessions"
+            hint="Reserves a strip of the watched monitor — your other windows resize to fit beside the coach"
+            checked={settings.dockEnabled}
+            onChange={(v) => patch({ dockEnabled: v })}
+            accentRGB={T.accentRGB}
+            accent={T.accent}
+          />
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span style={{ fontSize: 12.5, fontWeight: 500, color: T.ink, opacity: settings.dockEnabled ? 1 : 0.4 }}>
+              Dock side
+            </span>
+            <div className="no-drag" style={{ display: "flex", gap: 6, opacity: settings.dockEnabled ? 1 : 0.4 }}>
+              {(["left", "right"] as const).map((side) => (
+                <button
+                  key={side}
+                  type="button"
+                  disabled={!settings.dockEnabled}
+                  onClick={() => void patch({ dockSide: side })}
+                  style={accentBtnStyle(settings.dockSide === side)}
+                >
+                  {side === "left" ? "Left" : "Right"}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
         {/* Window */}
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <span style={sectionLabel}>Window</span>

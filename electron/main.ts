@@ -24,6 +24,16 @@ import {
   invalidateCalibration,
 } from "./calibrate";
 import {
+  dockWindow,
+  undockWindow,
+  updateDockWidth,
+  isDocked,
+  isDockingAvailable,
+  getDockRectDip,
+  setDockChangeListener,
+} from "./dock";
+import { clampDockWidth, RAIL_WIDTH, subtractDockStrip } from "./dock-geometry";
+import {
   clearKey,
   hasKey,
   setKey,
@@ -103,6 +113,10 @@ let glowWindow: BrowserWindow | null = null;
 // stop bounds persistence from saving the collapsed stub size.
 let expandedSize: { width: number; height: number } | null = null;
 let isCollapsed = false;
+// Whether the renderer asked to be docked. Survives an involuntary undock
+// (docked monitor unplugged) so we can redock once a watched display exists.
+let wantsDock = false;
+let redockTimer: ReturnType<typeof setTimeout> | null = null;
 let tray: Tray | null = null;
 let glowAdjusting = false;
 let inputDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -116,7 +130,9 @@ let dragInterval: ReturnType<typeof setInterval> | null = null;
 const DRAG_WATCHDOG_MS = 20_000;
 
 function startWindowDrag() {
-  if (!mainWindow || mainWindow.isDestroyed() || dragInterval) return;
+  // A docked appbar owns its position — manual dragging would tear the
+  // window off the reserved strip.
+  if (!mainWindow || mainWindow.isDestroyed() || dragInterval || isDocked()) return;
   const cursorStart = screen.getCursorScreenPoint();
   const [winX, winY] = mainWindow.getPosition();
   const startedAt = Date.now();
@@ -320,7 +336,15 @@ function showGlowOverlay(displayId: string | null) {
   glowAdjusting = false;
 
   const target = getGlowDisplay(displayId);
-  const { x, y, width, height } = target.bounds;
+  // While docked on this display the glow outlines the remaining desktop —
+  // the sidebar's strip is excluded from capture, so it's excluded from the
+  // "what I'm watching" box too.
+  const dock = getDockRectDip();
+  const area =
+    dock && dock.displayId === String(target.id)
+      ? subtractDockStrip(target.bounds, dock.rect)
+      : target.bounds;
+  const { x, y, width, height } = area;
 
   glowWindow = new BrowserWindow({
     x,
@@ -376,6 +400,25 @@ async function resolveWatchedDisplayId(): Promise<string | null> {
   }
   if (s.selectedDisplayId) return s.selectedDisplayId;
   return String(screen.getPrimaryDisplay().id);
+}
+
+// Dock the panel to the watched monitor — the one actually captured — so the
+// coach sits beside the work it's coaching through.
+async function dockToWatchedDisplay(): Promise<boolean> {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  const s = loadSettings();
+  const watchedId = await resolveWatchedDisplayId();
+  const display =
+    screen.getAllDisplays().find((d) => String(d.id) === watchedId) ??
+    screen.getPrimaryDisplay();
+  const ok = dockWindow(
+    mainWindow,
+    display,
+    s.dockSide,
+    clampDockWidth(s.dockWidth),
+  );
+  if (ok) mainWindow.setOpacity(1);
+  return ok;
 }
 
 function hideGlowOverlay() {
@@ -465,7 +508,9 @@ function createWindow() {
     if (saveBoundsTimer) clearTimeout(saveBoundsTimer);
     saveBoundsTimer = setTimeout(() => {
       saveBoundsTimer = null;
-      if (isCollapsed) return;
+      // Skip the collapsed stub and the docked strip — neither is a real
+      // floating size, and persisting them would clobber the saved bounds.
+      if (isCollapsed || isDocked()) return;
       if (mainWindow && !mainWindow.isDestroyed()) {
         saveSettings({ windowBounds: mainWindow.getBounds() });
       }
@@ -516,6 +561,33 @@ app.whenReady().then(async () => {
 
   registerIpc();
   createWindow();
+
+  // Dock transitions (including involuntary ones — docked monitor unplugged,
+  // width changes) fan out to the renderer chrome and the glow overlay.
+  let glowRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  setDockChangeListener(({ docked, rect, displayLost }) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("dock:changed", { docked, rect });
+    }
+    // Recreating the glow window is heavy — debounce so a live drag-resize
+    // refreshes it once at the end, not per frame.
+    if (glowRefreshTimer) clearTimeout(glowRefreshTimer);
+    glowRefreshTimer = setTimeout(() => {
+      glowRefreshTimer = null;
+      void resolveWatchedDisplayId().then((id) => {
+        if (glowWindow && !glowWindow.isDestroyed()) showGlowOverlay(id);
+      });
+    }, 300);
+    if (displayLost && wantsDock) {
+      // Redock once the display set settles and recalibration has re-resolved
+      // the watched screen.
+      if (redockTimer) clearTimeout(redockTimer);
+      redockTimer = setTimeout(() => {
+        redockTimer = null;
+        if (wantsDock && !isDocked()) void dockToWatchedDisplay();
+      }, 2_500);
+    }
+  });
 
   // Pixel-verified screen calibration: runs now (before the first capture)
   // and re-runs when monitors change; each fresh result re-places the glow on
@@ -573,6 +645,12 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
+// Never leave reserved desktop space behind — release the appbar strip on
+// the way out (dock.ts also handles window close; the OS handles a crash).
+app.on("will-quit", () => {
+  undockWindow();
+});
+
 function registerIpc() {
   ipcMain.handle("settings:get", () => loadSettings());
 
@@ -592,7 +670,7 @@ function registerIpc() {
         patch = { ...patch, captureRegion: null };
       }
       const next = saveSettings(patch);
-      if (mainWindow && typeof patch.opacity === "number") {
+      if (mainWindow && typeof patch.opacity === "number" && !isDocked()) {
         mainWindow.setOpacity(next.opacity);
       }
       // Moving the capture to a different screen (or recoloring the accent)
@@ -795,7 +873,10 @@ function registerIpc() {
     "window:set-opacity",
     (_e: IpcMainInvokeEvent, payload: { opacity: number }) => {
       if (!mainWindow) return;
-      const clamped = Math.max(0.25, Math.min(1, payload.opacity));
+      // Docked: a translucent appbar reads as broken chrome — stay opaque.
+      const clamped = isDocked()
+        ? 1
+        : Math.max(0.25, Math.min(1, payload.opacity));
       mainWindow.setOpacity(clamped);
     },
   );
@@ -812,6 +893,17 @@ function registerIpc() {
     "window:set-collapsed",
     (_e: IpcMainInvokeEvent, payload: { collapsed: boolean }) => {
       if (!mainWindow || mainWindow.isDestroyed()) return;
+      // Docked: collapse shrinks the reserved strip to a thin rail instead
+      // of the floating capsule — the session keeps running, the desktop
+      // gets its width back.
+      if (isDocked()) {
+        updateDockWidth(
+          payload.collapsed
+            ? RAIL_WIDTH
+            : clampDockWidth(loadSettings().dockWidth),
+        );
+        return;
+      }
       const b = mainWindow.getBounds();
       if (payload.collapsed && !isCollapsed) {
         expandedSize = { width: b.width, height: b.height };
@@ -852,7 +944,13 @@ function registerIpc() {
   ipcMain.on("window:drag-end", () => stopWindowDrag());
 
   ipcMain.handle("window:minimize", () => {
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.minimize();
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    // A minimized appbar would leave a dead reserved strip — undock first.
+    if (isDocked()) {
+      wantsDock = false;
+      undockWindow();
+    }
+    mainWindow.minimize();
   });
 
   ipcMain.handle(
@@ -969,6 +1067,46 @@ function registerIpc() {
   ipcMain.on("session:log", (_e, message: string) => {
     console.log("[renderer]", message);
   });
+
+  ipcMain.handle("dock:set", async (_e, payload: { docked: boolean }) => {
+    wantsDock = Boolean(payload.docked);
+    if (redockTimer) {
+      clearTimeout(redockTimer);
+      redockTimer = null;
+    }
+    if (wantsDock) {
+      await dockToWatchedDisplay();
+    } else {
+      undockWindow();
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.setOpacity(loadSettings().opacity);
+      }
+    }
+    return {
+      docked: isDocked(),
+      rect: getDockRectDip()?.rect ?? null,
+      available: isDockingAvailable(),
+    };
+  });
+
+  // Live drag-resize fires many times per second — apply the width
+  // immediately (that's the live re-flow), persist it debounced.
+  let dockWidthSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  ipcMain.handle("dock:resize", (_e, payload: { width: number }) => {
+    const width = clampDockWidth(payload.width);
+    if (isDocked()) updateDockWidth(width);
+    if (dockWidthSaveTimer) clearTimeout(dockWidthSaveTimer);
+    dockWidthSaveTimer = setTimeout(() => {
+      dockWidthSaveTimer = null;
+      saveSettings({ dockWidth: width });
+    }, 400);
+    return width;
+  });
+
+  ipcMain.handle("dock:state", () => ({
+    docked: isDocked(),
+    rect: getDockRectDip()?.rect ?? null,
+  }));
 
   ipcMain.handle(
     "claude:evaluate-goal",

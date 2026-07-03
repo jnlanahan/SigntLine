@@ -8,11 +8,12 @@ import { api } from "./lib/api";
 import { FollowUpInput } from "./components/FollowUpInput";
 import { GoalPrompt } from "./components/GoalPrompt";
 import { ModeSelect } from "./components/ModeSelect";
-import type { AppMode, CaptureTarget, Clarification, SessionStatus } from "./lib/api";
+import type { AppMode, CaptureTarget, Clarification, DockSide, SessionStatus } from "./lib/api";
 import { Instruction } from "./components/Instruction";
 import { PrivacyNotice } from "./components/PrivacyNotice";
 import { Settings as SettingsView } from "./components/Settings";
 import { CompletedSteps } from "./components/CompletedSteps";
+import { DockRail } from "./components/DockRail";
 import { ConversationHistory } from "./components/ConversationHistory";
 import { useTheme } from "./design/ThemeProvider";
 import { Glow, Logo, Spinner, CtrlBtn } from "./design/primitives";
@@ -97,6 +98,7 @@ export default function App() {
   const [showStopConfirm, setShowStopConfirm] = useState(false);
   const [showQuitConfirm, setShowQuitConfirm] = useState(false);
   const [collapsed, setCollapsed]         = useState(false);
+  const [docked, setDocked]               = useState(false);
   const [planOpen, setPlanOpen]           = useState(false);
   const [evalResult, setEvalResult]       = useState<{ achieved: boolean; verdict: string } | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
@@ -113,6 +115,19 @@ export default function App() {
   useSessionLoop(openSettings, focused);
 
   useEffect(() => { void loadSettings(); }, [loadSettings]);
+
+  // Coach Mode: track whether the window is currently a docked sidebar. The
+  // main process is the source of truth — transitions can also happen without
+  // the renderer asking (docked monitor unplugged, minimize while docked).
+  useEffect(() => {
+    void api().dock.state().then((s) => setDocked(s.docked));
+    return api().dock.onChanged((s) => {
+      setDocked(s.docked);
+      // Undocking restores the expanded floating window — a leftover rail
+      // state would render a 64px strip inside a full-size window.
+      if (!s.docked) setCollapsed(false);
+    });
+  }, []);
 
   useEffect(() => {
     return api().overlay.onRegionUpdated(() => { void loadSettings(); });
@@ -135,10 +150,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!settings) return;
+    if (!settings || docked) return; // docked sidebar stays opaque
     const target = focused ? 1 : settings.opacity;
     void api().window.setOpacity(target);
-  }, [focused, settings]);
+  }, [focused, settings, docked]);
 
   useEffect(() => {
     if (!showPeek) return;
@@ -152,6 +167,11 @@ export default function App() {
   useEffect(() => {
     setEvalResult(null);
   }, [instruction]);
+
+  // Session complete → give the desktop back.
+  useEffect(() => {
+    if (done) void api().dock.set(false);
+  }, [done]);
 
   async function toggleCollapsed() {
     const next = !collapsed;
@@ -186,6 +206,11 @@ export default function App() {
     useSession.getState().setLastSpokeAt(Date.now());
     useSession.getState().setLastScreenChangeAt(Date.now());
     setStatus("watching");
+    // Coach Mode: dock beside the watched screen for the session. Falls back
+    // to floating silently if the AppBar layer is unavailable.
+    if (useSettings.getState().settings?.dockEnabled) {
+      void api().dock.set(true);
+    }
   }
 
   function pause() {
@@ -205,6 +230,7 @@ export default function App() {
     setShowPeek(false);
     setShowStopConfirm(false);
     setEvalResult(null);
+    void api().dock.set(false);
   }
 
   async function markDone() {
@@ -260,9 +286,28 @@ export default function App() {
   const lastFrame  = frames.length > 0 ? frames[frames.length - 1] : null;
   const showSpinner = status === "thinking" || status === "researching" || status === "clarifying";
 
-  // Collapsed compact bar — all hooks above keep running (capture loop, TTS),
-  // only the UI shrinks.
+  // Collapsed — all hooks above keep running (capture loop, TTS), only the
+  // UI shrinks. Docked: a thin vertical rail (the reserved strip narrows);
+  // floating: the horizontal compact bar.
   if (collapsed) {
+    if (docked) {
+      return (
+        <PanelShell docked>
+          <DockRail
+            status={status}
+            statusText={STATUS_TEXT[status]}
+            dotColor={STATUS_DOT[status]}
+            instruction={instruction}
+            ttsEnabled={settings?.ttsEnabled ?? false}
+            isPaused={status === "paused"}
+            onToggleVoice={toggleVoice}
+            onPause={pause}
+            onResume={resume}
+            onExpand={() => void toggleCollapsed()}
+          />
+        </PanelShell>
+      );
+    }
     return (
       <PanelShell radius={16}>
         <CollapsedBar
@@ -281,7 +326,7 @@ export default function App() {
 
   if (view === "privacy") {
     return (
-      <PanelShell>
+      <PanelShell docked={docked}>
         <PrivacyNotice
           onAccept={async () => {
             await patchSettings({ hasSeenPrivacyNotice: true });
@@ -294,14 +339,15 @@ export default function App() {
 
   if (view === "settings") {
     return (
-      <PanelShell>
+      <PanelShell docked={docked}>
         <SettingsView onClose={() => setView("panel")} />
       </PanelShell>
     );
   }
 
   return (
-    <PanelShell>
+    <PanelShell docked={docked}>
+      {docked && <DockResizeHandle side={settings?.dockSide ?? "left"} />}
       <PanelHeader
         status={status}
         mode={mode}
@@ -367,12 +413,13 @@ export default function App() {
               completedSteps.length + (instruction ? 1 : 0) + upcomingSteps.length
             }
             open={planOpen}
+            docked={docked}
             onToggle={() => setPlanOpen((v) => !v)}
           />
 
           {/* Plan drawer — overlays the chat, never squeezes it */}
           {planOpen && (
-            <PlanDrawer onClose={() => setPlanOpen(false)}>
+            <PlanDrawer top={docked ? 92 : 36} onClose={() => setPlanOpen(false)}>
               <CompletedSteps
                 completedSteps={completedSteps}
                 currentInstruction={instruction}
@@ -503,9 +550,20 @@ function beginWindowDrag(e: React.PointerEvent) {
 
 /* ── Panel shell — full-window glass container ── */
 
-function PanelShell({ children, radius = 22 }: { children: React.ReactNode; radius?: number }) {
+function PanelShell({
+  children,
+  radius = 22,
+  docked = false,
+}: {
+  children: React.ReactNode;
+  radius?: number;
+  docked?: boolean;
+}) {
   const T = useTheme();
   const solidBg = useSettings((s) => s.settings?.solidBackground ?? false);
+  // Docked: the window IS a reserved strip of the monitor — square corners,
+  // solid surface, no glow bloom. Appbars are opaque rectangles.
+  const r = docked ? 0 : radius;
   return (
     <div
       onPointerDown={beginWindowDrag}
@@ -513,7 +571,7 @@ function PanelShell({ children, radius = 22 }: { children: React.ReactNode; radi
         position: "relative",
         width: "100vw",
         height: "100vh",
-        borderRadius: radius,
+        borderRadius: r,
         overflow: "hidden",
         fontFamily: T.font,
         color: T.ink,
@@ -524,7 +582,7 @@ function PanelShell({ children, radius = 22 }: { children: React.ReactNode; radi
           from whatever's on screen behind it. */}
       <div aria-hidden style={{
         position: "absolute", inset: 0, pointerEvents: "none",
-        ...(solidBg ? {
+        ...(solidBg || docked ? {
           background: T.surface,
         } : {
           backdropFilter: "blur(26px) saturate(1.2)",
@@ -532,14 +590,71 @@ function PanelShell({ children, radius = 22 }: { children: React.ReactNode; radi
           background: `${T.glassGrad}, ${T.glassBg}`,
         }),
         border: `1px solid ${T.border}`,
-        boxShadow: `0 1px 0 0 ${T.hi} inset, 0 24px 60px -18px rgba(22,26,14,0.55), 0 0 0 1px rgba(22,26,14,0.18)`,
-        borderRadius: radius,
+        boxShadow: docked
+          ? `0 1px 0 0 ${T.hi} inset`
+          : `0 1px 0 0 ${T.hi} inset, 0 24px 60px -18px rgba(22,26,14,0.55), 0 0 0 1px rgba(22,26,14,0.18)`,
+        borderRadius: r,
       }} />
-      <Glow />
+      {!docked && <Glow />}
       <div style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", height: "100%" }}>
         {children}
       </div>
     </div>
+  );
+}
+
+/* ── Dock width resize handle ──
+   The desktop-facing edge of the docked sidebar. Dragging re-asserts the
+   AppBar rect live, so other windows re-flow while you drag (like resizing
+   the taskbar). Width is clamped and persisted in the main process. */
+
+function DockResizeHandle({ side }: { side: DockSide }) {
+  const [active, setActive] = useState(false);
+
+  function onPointerDown(e: React.PointerEvent) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const el = e.currentTarget as HTMLElement;
+    try { el.setPointerCapture(e.pointerId); } catch { /* unsupported */ }
+    setActive(true);
+    let raf: number | null = null;
+    let pending = 0;
+    const move = (ev: PointerEvent) => {
+      pending = side === "left" ? ev.clientX + 3 : window.innerWidth - ev.clientX + 3;
+      if (raf == null) {
+        raf = requestAnimationFrame(() => {
+          raf = null;
+          void api().dock.resize(pending);
+        });
+      }
+    };
+    const up = () => {
+      setActive(false);
+      if (raf != null) cancelAnimationFrame(raf);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  }
+
+  return (
+    <div
+      className="no-drag"
+      title="Drag to resize the sidebar"
+      onPointerDown={onPointerDown}
+      style={{
+        position: "absolute", top: 0, bottom: 0, width: 6, zIndex: 60,
+        ...(side === "left" ? { right: 0 } : { left: 0 }),
+        cursor: "ew-resize",
+        background: active ? lt(0.14) : "transparent",
+        transition: "background 120ms",
+      }}
+      onMouseEnter={(e) => { if (!active) (e.currentTarget as HTMLElement).style.background = lt(0.08); }}
+      onMouseLeave={(e) => { if (!active) (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+    />
   );
 }
 
@@ -551,6 +666,7 @@ function GoalStrip({
   stepsDone,
   stepsTotal,
   open,
+  docked = false,
   onToggle,
 }: {
   label: string;
@@ -558,9 +674,76 @@ function GoalStrip({
   stepsDone: number;
   stepsTotal: number;
   open: boolean;
+  docked?: boolean;
   onToggle(): void;
 }) {
   const T = useTheme();
+
+  // Docked "course header": the goal is the course title (two lines allowed)
+  // with a real progress bar underneath — the desktop is the classroom, this
+  // is the course rail. Click still opens the curriculum drawer.
+  if (docked) {
+    const pct = stepsTotal > 0 ? Math.min(100, (stepsDone / stepsTotal) * 100) : 0;
+    return (
+      <button
+        type="button"
+        className="no-drag"
+        onClick={onToggle}
+        title={open ? "Hide the curriculum" : "Show the curriculum and attached context"}
+        style={{
+          display: "flex", flexDirection: "column", gap: 6,
+          width: "100%", textAlign: "left",
+          padding: "9px 14px 10px", border: 0, cursor: "pointer",
+          borderBottom: `1px solid ${lt(0.08)}`,
+          background: open ? lt(0.05) : lt(0.02),
+          flexShrink: 0,
+        }}
+      >
+        <span style={{ display: "flex", alignItems: "center", gap: 8, width: "100%" }}>
+          <span style={{
+            fontSize: 9, fontWeight: 700, letterSpacing: "0.12em",
+            textTransform: "uppercase", color: T.ink3, flexShrink: 0,
+          }}>
+            {label}
+          </span>
+          <span style={{ flex: 1 }} />
+          {stepsTotal > 0 && (
+            <span style={{ fontSize: 11, fontWeight: 600, color: T.accentText, flexShrink: 0 }}>
+              Step {Math.min(stepsDone + 1, stepsTotal)} of {stepsTotal}
+            </span>
+          )}
+          <span style={{
+            color: T.ink3, flexShrink: 0, display: "inline-flex",
+            transform: open ? "rotate(-90deg)" : "rotate(90deg)",
+            transition: "transform 160ms",
+          }}>
+            <IChevron />
+          </span>
+        </span>
+        <span style={{
+          fontSize: 13, lineHeight: 1.35, color: T.ink, fontWeight: 600,
+          display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
+          overflow: "hidden",
+        }}>
+          {goal}
+        </span>
+        {stepsTotal > 0 && (
+          <span aria-hidden style={{
+            display: "block", width: "100%", height: 4, borderRadius: 4,
+            background: lt(0.08), overflow: "hidden",
+          }}>
+            <span style={{
+              display: "block", height: "100%", width: `${pct}%`,
+              borderRadius: 4,
+              background: `linear-gradient(90deg, ${T.accent}, ${T.accentDeep})`,
+              transition: "width 400ms ease",
+            }} />
+          </span>
+        )}
+      </button>
+    );
+  }
+
   return (
     <button
       type="button"
@@ -606,9 +789,11 @@ function GoalStrip({
 
 function PlanDrawer({
   children,
+  top = 36,
   onClose,
 }: {
   children: React.ReactNode;
+  top?: number;
   onClose(): void;
 }) {
   const T = useTheme();
@@ -616,7 +801,7 @@ function PlanDrawer({
     <div
       className="no-drag sl-scroll sl-sheet-in"
       style={{
-        position: "absolute", top: 36, left: 10, right: 10, zIndex: 40,
+        position: "absolute", top, left: 10, right: 10, zIndex: 40,
         maxHeight: "62%", overflowY: "auto",
         borderRadius: 13, border: `1px solid ${lt(0.16)}`,
         background: T.surface,
@@ -759,7 +944,11 @@ function PanelHeader({
       <Logo size={38} radius={11} />
 
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontFamily: T.display, fontSize: 19, fontWeight: 650, letterSpacing: "-0.01em", lineHeight: 1.1, color: T.ink }}>
+        <div style={{
+          fontFamily: T.display, fontSize: 19, fontWeight: 650,
+          letterSpacing: "-0.01em", lineHeight: 1.1, color: T.ink,
+          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+        }}>
           SightLine
         </div>
         <div style={{ marginTop: 3, display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: T.ink3 }}>

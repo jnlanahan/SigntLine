@@ -5,6 +5,8 @@ import {
   invalidateCalibration,
   type CalibrationResult,
 } from "./calibrate";
+import { getDockRectDip } from "./dock";
+import { subtractDockStrip } from "./dock-geometry";
 import type {
   CaptureFrame,
   CaptureRegion,
@@ -202,16 +204,45 @@ export async function captureFrame(
     throw new Error("Captured an empty frame (permission may be denied)");
   }
 
-  // Crop to the selected region. The region is in display-relative DIP, so we
-  // scale it into the captured thumbnail's pixel space.
-  if (region) {
+  // Coach Mode: while the sidebar is docked on this display, its own strip is
+  // cut out of every frame — the model never sees its own panel. The dock
+  // strip is subtracted FIRST; the user's region (drawn inside the glow
+  // window, which itself covers only the remainder while docked) applies
+  // relative to that base. Both are clamped.
+  let effectiveRegion = region;
+  const dock = getDockRectDip();
+  if (dock && dock.displayId === String(target.id)) {
+    const base = subtractDockStrip(target.bounds, dock.rect);
+    const baseRel = {
+      x: base.x - target.bounds.x,
+      y: base.y - target.bounds.y,
+      width: base.width,
+      height: base.height,
+    };
+    if (region) {
+      const x = baseRel.x + clamp(region.x, 0, Math.max(0, baseRel.width - 1));
+      const y = baseRel.y + clamp(region.y, 0, Math.max(0, baseRel.height - 1));
+      effectiveRegion = {
+        x,
+        y,
+        width: clamp(region.width, 1, baseRel.x + baseRel.width - x),
+        height: clamp(region.height, 1, baseRel.y + baseRel.height - y),
+      };
+    } else {
+      effectiveRegion = baseRel;
+    }
+  }
+
+  // Crop to the effective region. It's in display-relative DIP, so we scale
+  // it into the captured thumbnail's pixel space.
+  if (effectiveRegion) {
     const ts = image.getSize();
     const sx = ts.width / target.size.width;
     const sy = ts.height / target.size.height;
-    const x = clamp(Math.round(region.x * sx), 0, Math.max(0, ts.width - 1));
-    const y = clamp(Math.round(region.y * sy), 0, Math.max(0, ts.height - 1));
-    const w = clamp(Math.round(region.width * sx), 1, ts.width - x);
-    const h = clamp(Math.round(region.height * sy), 1, ts.height - y);
+    const x = clamp(Math.round(effectiveRegion.x * sx), 0, Math.max(0, ts.width - 1));
+    const y = clamp(Math.round(effectiveRegion.y * sy), 0, Math.max(0, ts.height - 1));
+    const w = clamp(Math.round(effectiveRegion.width * sx), 1, ts.width - x);
+    const h = clamp(Math.round(effectiveRegion.height * sy), 1, ts.height - y);
     if (w > 0 && h > 0) {
       image = image.crop({ x, y, width: w, height: h });
     }

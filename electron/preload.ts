@@ -9,6 +9,7 @@ import type {
   ClarificationResponse,
   ConversationTurn,
   DisplayInfo,
+  DockState,
   GoalEvaluation,
   InstructionResponse,
   SessionPlan,
@@ -122,6 +123,18 @@ export interface SightLineApi {
   input: {
     onActivity(cb: () => void): () => void;
   };
+  dock: {
+    // Dock/undock the panel as a Windows AppBar on the watched monitor.
+    // Resolves with the resulting state (docked stays false if the FFI layer
+    // is unavailable — the app keeps floating).
+    set(docked: boolean): Promise<DockState & { available: boolean }>;
+    // Change the reserved strip width (DIP); persisted. Returns the clamped width.
+    resize(width: number): Promise<number>;
+    state(): Promise<DockState>;
+    // Fires on every dock transition, including involuntary ones (docked
+    // monitor unplugged) and width changes.
+    onChanged(cb: (state: DockState) => void): () => void;
+  };
   app: {
     quit(): Promise<void>;
   };
@@ -204,6 +217,17 @@ const api: SightLineApi = {
       const handler = () => cb();
       ipcRenderer.on("input:activity", handler);
       return () => ipcRenderer.removeListener("input:activity", handler);
+    },
+  },
+  dock: {
+    set: (docked) => ipcRenderer.invoke("dock:set", { docked }),
+    resize: (width) => ipcRenderer.invoke("dock:resize", { width }),
+    state: () => ipcRenderer.invoke("dock:state"),
+    onChanged: (cb) => {
+      const handler = (_: Electron.IpcRendererEvent, state: DockState) =>
+        cb(state);
+      ipcRenderer.on("dock:changed", handler);
+      return () => ipcRenderer.removeListener("dock:changed", handler);
     },
   },
   app: {

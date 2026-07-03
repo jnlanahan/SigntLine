@@ -18,6 +18,9 @@ const DEFAULTS: Settings = {
   solidBackground: true,
   uiOpaqueMigration: false,
   uiSideRailMigration: false,
+  dockEnabled: true,
+  dockSide: "left",
+  dockWidth: 400,
 };
 
 function settingsPath(): string {

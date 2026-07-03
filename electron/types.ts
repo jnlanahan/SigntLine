@@ -107,6 +107,23 @@ export type TtsVoiceId =
 
 export type AccentName = "lime" | "cobalt" | "rose" | "slate";
 
+// Side of the monitor the docked sidebar reserves (Windows AppBar).
+export type DockSide = "left" | "right";
+
+export interface DockRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface DockState {
+  docked: boolean;
+  // Reserved strip in screen DIP coordinates (same space as display.bounds);
+  // null while floating.
+  rect: DockRect | null;
+}
+
 export interface WindowBounds {
   x: number;
   y: number;
@@ -136,6 +153,11 @@ export interface Settings {
   // One-time migration flag: widens the saved window once for the side-rail
   // layout (plan steps now live in a right-hand column that needs room).
   uiSideRailMigration: boolean;
+  // Coach Mode: dock the panel to the side of the watched monitor during
+  // sessions (Windows AppBar — the OS reserves the strip).
+  dockEnabled: boolean;
+  dockSide: DockSide;
+  dockWidth: number;
 }
 
 export interface DisplayInfo {
@@ -197,4 +219,7 @@ export type IpcChannel =
   | "overlay:cancel-adjust"
   | "tts:speak"
   | "session:log"
-  | "claude:evaluate-goal";
+  | "claude:evaluate-goal"
+  | "dock:set"
+  | "dock:resize"
+  | "dock:state";
