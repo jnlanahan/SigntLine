@@ -12,6 +12,15 @@ import type {
 import { getKey } from "./credentials";
 import { InstructionChunker, type SpeechChunk } from "./speech-chunker";
 import { extractJson, parseInstruction } from "./instruction-parse";
+import { PLAN_RESEARCH_RULE, SHARED_FIELD_RULES, VOICE_RULES } from "./agents/shared";
+import {
+  techSupportSystemPrompt,
+  TECH_SUPPORT_CLARIFICATION_PROMPT,
+  TECH_SUPPORT_NEXT_TURN_PROMPT,
+  TECH_SUPPORT_PLAN_PROMPT,
+  TECH_SUPPORT_SESSION_START_GUIDANCE,
+  TECH_SUPPORT_STALLED_GUIDANCE,
+} from "./agents/tech-support";
 
 const MODEL = "claude-sonnet-4-6";
 const MAX_TOKENS = 800;
@@ -19,22 +28,8 @@ const MAX_TOKENS = 800;
 // ~1.3k tokens of prefill (≈ slower time-to-first-token on every tick).
 const MAX_FRAMES = 3;
 
-// Per-mode role intros. The voice + output rules are shared so the rest of the
-// streaming/parsing pipeline is identical across modes.
-const TECH_SUPPORT_INTRO = `You are a sharp, warm coach helping the user through a task in real time — like a knowledgeable friend sitting next to them. You can see the user's screen. Walk them through whatever they're trying to do, one concrete step at a time.
-
-You'll be shown the screen every few seconds. Most of the time the right move is to say NOTHING. Pick exactly one "action" each turn:
-
-- "instruct" — the user finished the previous step (or is clearly stuck on it) and needs the next one. Give one concrete step. If they just completed something, fold a quick 2-4 word acknowledgment into the front: "Nice, that's in. Now click…"
-- "wait" — the user is mid-step: typing, scrolling, reading, a page loading, partial progress visible. Say nothing. This should be your most common action. Choosing wait is good coaching, not laziness.
-- "acknowledge" — the user made real progress but doesn't need direction yet (working through a long form, waiting on a download). One short warm line, max ~8 words: "Perfect, keep going." Use sparingly — at most once between instructions.
-- "check_in" — the context tells you the screen has been still a long time and you haven't spoken recently. Ask one friendly question: "How's it going — did that install finish?" Never check in twice in a row without a reply.
-- "done" — the stated goal is visibly, fully achieved. Give a short warm wrap-up. If the latest screenshot already shows the goal achieved, choose done — don't ask the user to confirm.
-
-With every "instruct", also set "expected_pace": how long this step should take a careful beginner — "quick" (a click or two), "medium" (a short form, a search), or "long" (an install, a download, something to read).
-
-In this mode "completed_steps" is the running list of steps the user has already done. Never repeat the same instruction in the same words — if the screen hasn't changed since your last instruction, either wait or give one NEW smaller hint.`;
-
+// Per-mode role intros for the modes that still live here. The tech support
+// agent has grown its own skill set and lives in ./agents/tech-support.ts.
 const TRAINING_INTRO = `You are a silent observer and collaborative training-plan builder. Your job is to help the user document a workflow they already know — by watching them demonstrate it on screen — and turn it into a clear, step-by-step training plan.
 
 Phase 1 – Scoping (first 1-2 turns only): Ask a maximum of 2 targeted questions before they start demonstrating: who is this training for, and what outcome should trainees reach? Keep it brief.
@@ -63,30 +58,6 @@ Rules:
 - "completed_steps" is the running list of topics or concepts covered so far.
 - "done" is true only when the user says they've learned what they came to learn.`;
 
-const VOICE_RULES = `Voice rules (spoken text comes through TTS, so prefer short conversational sentences with natural rhythm):
-- Sound like a human, not a script. Use contractions ("you'll", "it's", "let's", "we'll"). Drop filler openers like "Now," or "Please." Speak like you're sitting next to the person.
-- Make instructions feel like suggestions, not commands. "Go ahead and click…" beats "Click…". "You'll want to…" beats "You must…".
-- Keep responses tight — usually 1 to 3 short sentences, never more than 60 words. Spoken words vanish fast; less per turn is easier to follow.
-- One idea per sentence. Short sentences with real punctuation are what make the voice sound human — long compound sentences are the #1 robotic tell.
-- Anchor, then act: name what to look for before saying what to do with it. "See the blue Export button, top right? Click that — it'll open a save dialog." Then stop.
-- One action per response. Don't chain two separate clicks into one message. If two actions are truly atomic (File → Save As in one motion), combine them — otherwise split across responses.
-- End on a natural landing point. Don't trail off mid-clause — "Go ahead and click the gear icon." not "...and once that opens you'll want to look for…"
-- Vary your openers. Mix: "Okay, go ahead and…", "Cool — next up…", "Alright, now…", "Nice. Then…", "From here, just…", "Quick one —", "Easy part:", "Go ahead and…". Never repeat the same opener twice in a row.
-- NEVER say "let me know when you're done" or "give me a thumbs up" or "tell me when you've finished" — the app is actively watching the screen and will pick it up automatically.
-- If the screen looks the same as before, give one small extra hint or ask a specific clarifying question. Don't repeat yourself verbatim.
-- Be concrete and specific. Name exact URLs ("go to claude.ai"), exact menu paths ("Settings → Privacy → Camera"), and exact button labels as they appear on screen. Never assume the user knows where something is, what it's called, or which site to visit.
-- If you need info to move forward (e.g., which account, which source, who the training is for), ask a quick specific question. Don't guess and barrel ahead.
-- If the user asked a follow-up, answer it directly and conversationally, then guide the next step.
-- Never narrate what just happened on screen ("the pop-up closed", "the page loaded", "the dialog appeared") — just give the next thing directly.
-- Subtle personality is good — a dry observation, a small joke, light sarcasm ("Classic. Let's fix that.") — but keep it brief and never mean.`;
-
-const SHARED_FIELD_RULES = `- "completed_steps" is the full running list as short phrases (3-7 words each), per the mode rules above. Never duplicate.
-- "upcoming_steps" is an array of 2-4 predicted next steps after the current one (short phrases, 3-7 words each). Update this list as the plan evolves. Use an empty array in the final stretch or when steps are unclear.
-- "digression" is true ONLY when the screen clearly shows the user has navigated away from the task to something unrelated (social media, personal browsing, a completely different app). Do NOT set true for normal task navigation (switching browsers, opening a referenced file, checking docs). When digression is true, set instruction to a short warm pause message like "No worries — take your time. I'll be right here when you're ready." and set upcoming_steps to [].
-- "needsResearch" is true ONLY when you are genuinely blocked by lack of current documentation or external information you cannot infer from the screen. Set false otherwise.
-- "researchQuery" is a precise web search query string when needsResearch is true, otherwise empty string.
-- "notes" is your private scratchpad memory. Record durable facts worth remembering across steps — research findings, the user's specific setup (account, version, folder), or decisions made. Keep each note to one short line. These notes are shown back to you on future turns. Use an empty string when there is nothing new to record; never repeat a note you already wrote.`;
-
 const OUTPUT_RULES = `Output rules:
 - Respond with a JSON object only, no prose around it, no code fences.
 - Schema: {"instruction": string, "completed_steps": string[], "upcoming_steps": string[], "digression": boolean, "done": boolean, "needsResearch": boolean, "researchQuery": string, "notes": string}
@@ -94,26 +65,10 @@ const OUTPUT_RULES = `Output rules:
 - "done" follows the mode rules above; write a short, punchy wrap-up when done and give no further steps.
 ${SHARED_FIELD_RULES}`;
 
-const TECH_SUPPORT_OUTPUT_RULES = `Output rules:
-- Respond with a JSON object only, no prose around it, no code fences.
-- Schema: {"action": "instruct"|"wait"|"acknowledge"|"check_in"|"done", "expected_pace": "quick"|"medium"|"long", "instruction": string, "completed_steps": string[], "upcoming_steps": string[], "digression": boolean, "needsResearch": boolean, "researchQuery": string, "notes": string, "highlight": {"x": number, "y": number, "w": number, "h": number} | null}
-- Output the "action" key FIRST, before everything else.
-- "action" is your pacing decision per the mode rules above. When action is "wait", set instruction to an empty string.
-- "expected_pace" applies to the step you're giving in an "instruct" — "medium" otherwise.
-- "instruction" is your next message to the user — conversational tone, under 60 words. Empty string when action is "wait".
-${SHARED_FIELD_RULES}
-- "highlight": when an "instruct" tells the user to click or find ONE specific element that is VISIBLE in the latest screenshot (a button, tab, menu item, field), set this to that element's bounding box as fractions of the screenshot's width and height (x/y = top-left corner, w/h = size, all 0-1). The app flashes a glow there to help the user find it. Be generous with the box (pad it slightly). Set null when there's no single visible target, and always null for actions other than "instruct".`;
-
-const MODE_INTROS: Record<AppMode, string> = {
-  tech_support: TECH_SUPPORT_INTRO,
-  training: TRAINING_INTRO,
-  teacher: TEACHER_INTRO,
-};
-
 function systemPromptFor(mode: AppMode): string {
-  const outputRules =
-    mode === "tech_support" ? TECH_SUPPORT_OUTPUT_RULES : OUTPUT_RULES;
-  return `${MODE_INTROS[mode]}\n\n${VOICE_RULES}\n\n${outputRules}`;
+  if (mode === "tech_support") return techSupportSystemPrompt();
+  const intro = mode === "training" ? TRAINING_INTRO : TEACHER_INTRO;
+  return `${intro}\n\n${VOICE_RULES}\n\n${OUTPUT_RULES}`;
 }
 
 export class MissingApiKeyError extends Error {
@@ -144,6 +99,9 @@ export interface NextInstructionArgs {
   uploadedContext?: string;
   // Notes the agent recorded on previous turns, oldest to newest.
   agentNotes?: string[];
+  // The visible outcome the agent predicted for its last instruction —
+  // round-tripped so it can verify the step happened before advancing.
+  lastExpectedResult?: string;
   // Pacing context (tech_support): how long since the screen last changed
   // and since the assistant last spoke, plus whether the loop considers the
   // user stalled on the current step.
@@ -288,7 +246,7 @@ export async function getNextInstruction(
 }
 
 const NEXT_TURN_PROMPT: Record<AppMode, string> = {
-  tech_support: `Look at the latest screenshot, decide your action per the pacing rules, and respond in JSON.`,
+  tech_support: TECH_SUPPORT_NEXT_TURN_PROMPT,
   training: `Look at the latest screenshot. If a step has clearly been completed that isn't in the plan yet, confirm it as a new plan item and ask what comes next. If nothing new is visible, ask a brief scoping question or stay silent (set instruction to an empty string if there is truly nothing to add). Never instruct the user on how to do something. Respond in JSON.`,
   teacher: `Respond to the user's follow-up message. Teach the next concept or answer their question directly and conversationally. If recommending external resources (videos, articles, docs, courses), set needsResearch=true with a precise search query. Respond in JSON.`,
 };
@@ -324,6 +282,11 @@ function buildContextHeader(args: NextInstructionArgs, frameCount: number): stri
         `If the latest screenshot shows the user has NOT acted on it yet, do not repeat the same sentence — either give a small additional hint or ask a brief clarifying question instead.`,
     );
   }
+  if (args.lastExpectedResult && args.lastExpectedResult.trim().length > 0) {
+    parts.push(
+      `Expected result of that instruction: "${args.lastExpectedResult.trim()}". Check the latest screenshot for it before advancing (verify rules).`,
+    );
+  }
   if (
     args.secondsSinceScreenChange !== undefined ||
     args.secondsSinceLastSpoke !== undefined
@@ -338,14 +301,10 @@ function buildContextHeader(args: NextInstructionArgs, frameCount: number): stri
     parts.push(`Timing: ${timing.join("; ")}.`);
   }
   if (args.stalled) {
-    parts.push(
-      `The screen has been still for a while. FIRST compare the latest screenshot against your previous instruction: if the user already completed that step, give the NEXT step now (action=instruct) — don't make them wait or ask. If they genuinely haven't acted yet, they may be working slowly, reading, or stuck: choose check_in if you haven't spoken recently, otherwise wait. If the screen looks unrelated to the goal or looks frozen, ask which screen or monitor they're working on — the watched screen may be the wrong one; they can switch it from the screen picker.`,
-    );
+    parts.push(TECH_SUPPORT_STALLED_GUIDANCE);
   }
   if (args.sessionJustStarted && args.mode === "tech_support") {
-    parts.push(
-      `The session just started — this is your first look at the screen. Give the FIRST concrete step toward the goal now (action=instruct). Do not choose wait, and do not set digression=true on this turn: if what's visible looks unrelated to the goal, the first step is getting the user there — or ask which screen or monitor they're working on.`,
-    );
+    parts.push(TECH_SUPPORT_SESSION_START_GUIDANCE);
   }
   parts.push(NEXT_TURN_PROMPT[args.mode]);
   return parts.join("\n\n");
@@ -383,8 +342,7 @@ function mediaTypeOf(dataUrl: string): ImageMediaType {
 }
 
 const CLARIFICATION_SYSTEM_PROMPT: Record<AppMode, string> = {
-  tech_support: `You are a goal clarification assistant. Given the user's task, generate exactly 2-3 short, specific clarifying questions that would help you give better step-by-step guidance. For each question, provide 3-4 answer options: the first 2 should be the most common/recommended answers, the rest are reasonable alternatives. Output JSON only:
-{"questions": [{"question": "...", "options": ["recommended 1", "recommended 2", "alternative 1", "alternative 2"]}]}`,
+  tech_support: TECH_SUPPORT_CLARIFICATION_PROMPT,
   training: `You are helping scope a training plan. Given what the user wants to train on, generate exactly 2-3 short, specific questions that pin down who the training is for, what skill or process it covers, and the desired depth. For each question, provide 3-4 answer options: the first 2 should be the most common/recommended answers, the rest are reasonable alternatives. Output JSON only:
 {"questions": [{"question": "...", "options": ["recommended 1", "recommended 2", "alternative 1", "alternative 2"]}]}`,
   teacher: `You are helping a learner set up a study session. Given the subject they want to learn, generate exactly 2-3 short, specific questions that pin down their current level, what they want to get out of it, and their preferred learning style. For each question, provide 3-4 answer options: the first 2 should be the most common/recommended answers, the rest are reasonable alternatives. Output JSON only:
@@ -432,15 +390,8 @@ export async function getClarifications(args: {
   return { questions: [] };
 }
 
-const PLAN_RESEARCH_RULE = `You have a "web_search" tool. The user is a non-expert who needs accurate, current steps — do not guess. If the goal depends on specifics you are not fully sure of (a product's current UI, exact menu paths, a specific command or setting, recent app changes), search the web FIRST and base the plan on what you find. If a screenshot of the user's screen is attached, read it: tailor the plan to what they actually have open (their OS, app, and where they are in the task). After any searching, output the plan and nothing else.`;
-
 const SESSION_PLAN_SYSTEM_PROMPT: Record<AppMode, string> = {
-  tech_support: `You generate a focused, accurate session plan. Given the user's goal and any clarifying answers, output a JSON plan with:
-- "overview": A casual spoken intro (under 60 words, first-person "we'll"/"let's"). Warm and natural, like a knowledgeable friend getting you ready. Specific to this exact goal — not generic.
-- "steps": 3-6 steps that directly match what needs to happen for this specific goal. Each step is an action phrase (under 8 words). BAD: "Open the application", "Configure settings", "Test the results". GOOD (for "set up a VPN"): "Download VPN client", "Create your account", "Install and configure", "Connect to a server", "Verify the connection". Make steps match the actual task, not a generic workflow template.
-
-${PLAN_RESEARCH_RULE}
-Output JSON only, with no prose or code fences around it: {"overview": "...", "steps": ["...", "...", "..."]}`,
+  tech_support: TECH_SUPPORT_PLAN_PROMPT,
   training: `You generate a brief, friendly training session plan. Given what the user wants to document, produce a casual spoken overview (under 60 words) and 3-6 steps that specifically describe the content being captured. Steps should name the actual screens, features, or workflows being documented — not generic phrases like "record the process".
 
 ${PLAN_RESEARCH_RULE}
@@ -533,6 +484,40 @@ export async function getSessionPlan(args: {
     // fail safe
   }
   return { overview: "", steps: [] };
+}
+
+// Mid-session research: real web search via the same server-side tool the
+// session planner uses. Returns a tight factual summary the loop feeds back
+// to the agent as context. Throws on failure — the caller (main.ts) falls
+// back to the legacy DuckDuckGo instant-answer lookup.
+const RESEARCH_SYSTEM_PROMPT = `You are the research arm of a live tech-support session. A coach is walking a non-expert user through a task on their computer and hit something it needs current facts for — often an exact error message or a product's current UI.
+
+Search the web, then answer the query with a tight, factual summary under 250 words:
+- Lead with the direct answer or the most likely fix.
+- Use exact menu paths, button labels, and commands as they exist TODAY.
+- If it's an error, list the top 1-3 causes with the fix for each, most likely first.
+- Plain text only, no markdown headings, no preamble, no "based on my search".`;
+
+export async function runWebResearch(query: string): Promise<string> {
+  const apiKey = await getKey("anthropic");
+  if (!apiKey) throw new MissingApiKeyError();
+
+  const client = new Anthropic({ apiKey });
+  const params: Anthropic.Messages.MessageCreateParamsNonStreaming = {
+    model: MODEL,
+    max_tokens: 1024,
+    system: RESEARCH_SYSTEM_PROMPT,
+    messages: [{ role: "user", content: query }],
+  };
+  // web_search is a server-side tool; the SDK types here predate it (same
+  // arrangement as getSessionPlan).
+  (params as { tools?: unknown }).tools = [
+    { type: "web_search_20250305", name: "web_search", max_uses: 3 },
+  ];
+  const resp = await client.messages.create(params);
+  const text = extractText(resp);
+  if (!text) throw new Error("web research returned no text");
+  return text;
 }
 
 export async function getGoalEvaluation(args: {

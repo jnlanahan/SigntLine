@@ -53,6 +53,8 @@ export function parseInstruction(
         action?: string;
         expected_pace?: string;
         instruction?: string;
+        expected_result?: string;
+        troubleshooting?: boolean;
         completed_steps?: string[];
         upcoming_steps?: string[];
         digression?: boolean;
@@ -78,6 +80,9 @@ export function parseInstruction(
             ? (obj.expected_pace as InstructionResponse["expectedPace"])
             : "medium",
         instruction: action === "wait" ? instruction : instruction || text,
+        expectedResult:
+          action === "instruct" ? (obj.expected_result ?? "").trim() : "",
+        troubleshooting: Boolean(obj.troubleshooting),
         completedSteps: Array.isArray(obj.completed_steps)
           ? obj.completed_steps.map(String)
           : previousSteps,
@@ -100,6 +105,8 @@ export function parseInstruction(
     action: "instruct",
     expectedPace: "medium",
     instruction: text || "Continue with the next step.",
+    expectedResult: "",
+    troubleshooting: false,
     completedSteps: previousSteps,
     upcomingSteps: [],
     digression: false,

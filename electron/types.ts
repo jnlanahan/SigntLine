@@ -67,6 +67,11 @@ export interface InstructionResponse {
   action: InstructionAction;
   expectedPace: StepPace;
   instruction: string;
+  // Visible outcome the agent expects this step to produce (verify skill).
+  // Empty for non-instruct actions.
+  expectedResult: string;
+  // True while the agent is diagnosing/fixing a visible failure.
+  troubleshooting: boolean;
   completedSteps: string[];
   upcomingSteps: string[];
   digression: boolean;

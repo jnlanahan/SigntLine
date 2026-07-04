@@ -50,6 +50,7 @@ import {
   getGoalEvaluation,
   getNextInstruction,
   getSessionPlan,
+  runWebResearch,
   MissingApiKeyError,
   RateLimitError,
 } from "./claude";
@@ -847,6 +848,7 @@ function registerIpc() {
         clarificationContext?: string;
         uploadedContext?: string;
         agentNotes?: string[];
+        lastExpectedResult?: string;
         secondsSinceScreenChange?: number;
         secondsSinceLastSpoke?: number;
         stalled?: boolean;
@@ -1029,6 +1031,25 @@ function registerIpc() {
   ipcMain.handle(
     "research:search",
     async (_e: IpcMainInvokeEvent, payload: { query: string }) => {
+      // Real web search first (Claude's server-side web_search tool — the
+      // same one the session planner uses). The legacy DuckDuckGo
+      // instant-answer lookup remains only as a fallback: it returns empty
+      // for most real queries, but empty is still better than an error.
+      const startedAt = Date.now();
+      try {
+        const text = await withTimeout(
+          runWebResearch(payload.query),
+          45_000,
+          "research_timeout",
+        );
+        logLine(
+          `[research] web search ok in ${Date.now() - startedAt}ms (${text.length} chars) for "${payload.query.slice(0, 80)}"`,
+        );
+        return { text };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logLine(`[research] web search failed (${msg}); trying DuckDuckGo fallback`);
+      }
       try {
         const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(payload.query)}&format=json&no_html=1&skip_disambig=1`;
         const resp = await fetch(url, { headers: { "User-Agent": "SightLine/0.1.0" } });
@@ -1045,6 +1066,7 @@ function registerIpc() {
             if ("Text" in t && t.Text) parts.push(t.Text);
           }
         }
+        logLine(`[research] DuckDuckGo fallback returned ${parts.length} snippet(s)`);
         return { text: parts.join("\n\n") };
       } catch (err) {
         return { __error: "fetch_failed", message: String(err) };

@@ -86,6 +86,7 @@ export default function App() {
   const conversation   = useSession((s) => s.conversation);
   const attachedFileNames = useSession((s) => s.attachedFileNames);
   const agentNotes     = useSession((s) => s.agentNotes);
+  const troubleshooting = useSession((s) => s.troubleshooting);
 
   const settings      = useSettings((s) => s.settings);
   const keyStatus     = useSettings((s) => s.keyStatus);
@@ -279,6 +280,12 @@ export default function App() {
   const lastFrame  = frames.length > 0 ? frames[frames.length - 1] : null;
   const showSpinner = status === "thinking" || status === "researching" || status === "clarifying";
 
+  // Troubleshooting overrides the ambient status while the session is live —
+  // the user should see the coach has switched from guiding to fixing.
+  const fixing = troubleshooting && (status === "watching" || status === "thinking");
+  const statusText = fixing ? "Troubleshooting…" : STATUS_TEXT[status];
+  const statusDot  = fixing ? "#C07C10" : STATUS_DOT[status];
+
   // Collapsed — all hooks above keep running (capture loop, TTS), only the
   // UI shrinks. Docked: a thin vertical rail (the reserved strip narrows);
   // floating: the horizontal compact bar.
@@ -288,8 +295,8 @@ export default function App() {
         <PanelShell docked>
           <DockRail
             status={status}
-            statusText={STATUS_TEXT[status]}
-            dotColor={STATUS_DOT[status]}
+            statusText={statusText}
+            dotColor={statusDot}
             instruction={instruction}
             ttsEnabled={settings?.ttsEnabled ?? false}
             isPaused={status === "paused"}
@@ -343,6 +350,8 @@ export default function App() {
       {docked && <DockResizeHandle side={settings?.dockSide ?? "left"} />}
       <PanelHeader
         status={status}
+        statusText={statusText}
+        dotColor={statusDot}
         mode={mode}
         showSpinner={showSpinner}
         docked={docked}
@@ -448,6 +457,7 @@ export default function App() {
                 done={done}
                 error={error}
                 researchQuery={researchQuery}
+                troubleshooting={troubleshooting}
                 onStepDone={
                   mode === "tech_support"
                     ? () => submitFollowUp("Done — what's next?")
@@ -877,6 +887,8 @@ function EvalResultCard({
 
 function PanelHeader({
   status,
+  statusText,
+  dotColor,
   mode,
   showSpinner,
   docked,
@@ -890,6 +902,8 @@ function PanelHeader({
   onQuit,
 }: {
   status: SessionStatus;
+  statusText: string;
+  dotColor: string;
   mode: AppMode | null;
   showSpinner: boolean;
   docked: boolean;
@@ -903,7 +917,6 @@ function PanelHeader({
   onQuit(): void;
 }) {
   const T = useTheme();
-  const dotColor = STATUS_DOT[status];
   const pulses   = status === "watching" || status === "thinking";
   const patchSettings = useSettings((s) => s.patch);
   const selectedDisplayId = useSettings((s) => s.settings?.selectedDisplayId ?? null);
@@ -967,7 +980,7 @@ function PanelHeader({
               }} />
             )}
           </span>
-          <span>{STATUS_TEXT[status]}</span>
+          <span>{statusText}</span>
           {mode && (
             <span style={{ color: T.ink3 }}>
               ·&nbsp;<span style={{ color: T.accentText, fontWeight: 600 }}>{MODE_LABELS[mode]}</span>

@@ -77,6 +77,33 @@ describe("parseInstruction", () => {
     expect(r.highlight).toBeNull();
   });
 
+  it("parses troubleshooting and expected_result", () => {
+    const r = parseInstruction(
+      JSON.stringify({
+        action: "instruct",
+        instruction: "Click Start and Close on the warehouse.",
+        expected_result: "the warehouse shows a green running dot",
+        troubleshooting: true,
+      }),
+      [],
+    );
+    expect(r.troubleshooting).toBe(true);
+    expect(r.expectedResult).toBe("the warehouse shows a green running dot");
+  });
+
+  it("expected_result is cleared for non-instruct actions", () => {
+    const r = parseInstruction(
+      JSON.stringify({
+        action: "wait",
+        instruction: "",
+        expected_result: "should be ignored",
+      }),
+      [],
+    );
+    expect(r.expectedResult).toBe("");
+    expect(r.troubleshooting).toBe(false);
+  });
+
   it("legacy modes without an action default to instruct/done", () => {
     const done = parseInstruction(
       JSON.stringify({ instruction: "All set!", done: true }),

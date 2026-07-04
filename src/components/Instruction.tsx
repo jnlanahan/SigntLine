@@ -8,6 +8,8 @@ interface Props {
   done: boolean;
   error: string | null;
   researchQuery?: string | null;
+  // The coach is diagnosing a failure rather than guiding the plan.
+  troubleshooting?: boolean;
   // "I did this" — tells the coach the step is complete without typing.
   onStepDone?: () => void;
 }
@@ -40,7 +42,7 @@ function useTypewriter(text: string): string {
   return shown;
 }
 
-export function Instruction({ instruction, status, done, error, researchQuery, onStepDone }: Props) {
+export function Instruction({ instruction, status, done, error, researchQuery, troubleshooting, onStepDone }: Props) {
   const T = useTheme();
   const display = useTypewriter(instruction);
   const busy = status === "thinking" || status === "evaluating";
@@ -181,9 +183,10 @@ export function Instruction({ instruction, status, done, error, researchQuery, o
     >
       <div style={{
         fontSize: 10, fontWeight: 700, letterSpacing: "0.13em",
-        textTransform: "uppercase", color: "rgba(240,238,228,0.5)",
+        textTransform: "uppercase",
+        color: troubleshooting ? "#E8B04B" : "rgba(240,238,228,0.5)",
       }}>
-        Current step
+        {troubleshooting ? "Let's fix this" : "Current step"}
       </div>
       <div
         className="sl-selectable animate-fade-in"

@@ -55,6 +55,7 @@ export interface SightLineApi {
       clarificationContext?: string;
       uploadedContext?: string;
       agentNotes?: string[];
+      lastExpectedResult?: string;
       secondsSinceScreenChange?: number;
       secondsSinceLastSpoke?: number;
       stalled?: boolean;

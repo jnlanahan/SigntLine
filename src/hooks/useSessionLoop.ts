@@ -275,6 +275,7 @@ export function useSessionLoop(onNeedsApiKey: () => void) {
           clarificationContext: s.clarificationContext,
           uploadedContext: s.uploadedContext,
           agentNotes: s.agentNotes,
+          lastExpectedResult: s.lastExpectedResult ?? undefined,
           secondsSinceScreenChange: Math.round(sinceChangeMs / 1000),
           secondsSinceLastSpoke: s.lastSpokeAt
             ? Math.round(sinceSpokeMs / 1000)
@@ -317,7 +318,7 @@ export function useSessionLoop(onNeedsApiKey: () => void) {
         }
 
         log(
-          `Claude ← action=${result.action} in ${Date.now() - callStartedAt}ms digression=${result.digression} pace=${result.expectedPace} highlight=${result.highlight ? "yes" : "no"} instr="${(result.instruction ?? "").slice(0, 60)}"`,
+          `Claude ← action=${result.action} in ${Date.now() - callStartedAt}ms digression=${result.digression} troubleshooting=${result.troubleshooting} pace=${result.expectedPace} highlight=${result.highlight ? "yes" : "no"} instr="${(result.instruction ?? "").slice(0, 60)}"`,
         );
 
         // 4. Update state — these apply on EVERY action, including "wait",
@@ -327,6 +328,7 @@ export function useSessionLoop(onNeedsApiKey: () => void) {
         useSession.getState().setLastProcessedHash(newHash);
         useSession.getState().setCompletedSteps(result.completedSteps);
         useSession.getState().setUpcomingSteps(result.upcomingSteps ?? []);
+        useSession.getState().setTroubleshooting(Boolean(result.troubleshooting));
 
         if (result.notes && result.notes.trim().length > 0) {
           useSession.getState().appendAgentNote(result.notes.trim());
@@ -397,6 +399,9 @@ export function useSessionLoop(onNeedsApiKey: () => void) {
             useSession.getState().setLastSpokenInstruction(result.instruction);
             useSession.getState().setLastSpokeAt(Date.now());
             useSession.getState().setCurrentPace(result.expectedPace);
+            useSession
+              .getState()
+              .setLastExpectedResult(result.expectedResult || null);
             if (!earlySpoken) speakOut(result.instruction);
             // Point at the thing to click: flash a glow box on the screen
             // over the element Claude identified.

@@ -45,6 +45,12 @@ export interface SessionState {
   lastCheckInAt: number | null;
   // Expected pace of the current step, from Claude — scales stall patience.
   currentPace: StepPace;
+  // True while the agent is diagnosing/fixing a visible failure — drives the
+  // "Troubleshooting…" UI state.
+  troubleshooting: boolean;
+  // Visible outcome the agent expects from its last instruction; echoed back
+  // to it next tick so it verifies the step happened before advancing.
+  lastExpectedResult: string | null;
   // Which TTS engine actually spoke last — lets the UI surface degradation
   // to the system voice instead of failing silently.
   lastTtsEngine: "google" | "openai" | "system" | "none" | null;
@@ -74,6 +80,8 @@ export interface SessionState {
   setLastScreenChangeAt(t: number | null): void;
   setLastCheckInAt(t: number | null): void;
   setCurrentPace(p: StepPace): void;
+  setTroubleshooting(v: boolean): void;
+  setLastExpectedResult(s: string | null): void;
   setLastTtsEngine(e: "google" | "openai" | "system" | "none" | null): void;
   reset(): void;
 }
@@ -107,6 +115,8 @@ const initial = {
   lastScreenChangeAt: null as number | null,
   lastCheckInAt: null as number | null,
   currentPace: "medium" as StepPace,
+  troubleshooting: false,
+  lastExpectedResult: null as string | null,
   lastTtsEngine: null as "google" | "openai" | "system" | "none" | null,
 };
 
@@ -160,6 +170,8 @@ export const useSession = create<SessionState>((set) => ({
   setLastScreenChangeAt: (t) => set({ lastScreenChangeAt: t }),
   setLastCheckInAt: (t) => set({ lastCheckInAt: t }),
   setCurrentPace: (p) => set({ currentPace: p }),
+  setTroubleshooting: (v) => set({ troubleshooting: v }),
+  setLastExpectedResult: (s) => set({ lastExpectedResult: s }),
   setLastTtsEngine: (e) => set({ lastTtsEngine: e }),
   reset: () => set({ ...initial }),
 }));
