@@ -17,7 +17,13 @@ import * as fs from "node:fs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import { loadSettings, saveSettings } from "./settings-store";
-import { captureFrame, listCaptureTargets, listDisplays } from "./capture";
+import {
+  captureFrame,
+  getLastCaptureGeometry,
+  listCaptureTargets,
+  listDisplays,
+} from "./capture";
+import { getLogPath, logLine } from "./log";
 import {
   getCalibration,
   initCalibration,
@@ -186,6 +192,12 @@ font-family:system-ui,-apple-system,Segoe UI,sans-serif}
 box-shadow:inset 0 0 70px 20px rgba(${accent.rgb},0.28),0 0 70px 20px rgba(${accent.rgb},0.28);
 animation:pulse 2.8s ease-in-out infinite}
 @keyframes pulse{0%,100%{opacity:0.5}50%{opacity:1}}
+/* click-target flash: a short glow over the element the coach wants clicked */
+#flash{position:fixed;display:none;pointer-events:none;border-radius:10px;
+border:4px solid ${accent.hex};
+box-shadow:0 0 0 4px rgba(${accent.rgb},0.35),0 0 44px 14px rgba(${accent.rgb},0.6),inset 0 0 26px 6px rgba(${accent.rgb},0.35)}
+#flash.on{display:block;animation:flashpulse 0.55s ease-in-out 3}
+@keyframes flashpulse{0%,100%{opacity:0.2}50%{opacity:1}}
 .handle{position:absolute;width:16px;height:16px;background:#fff;
 border:2px solid rgba(${accent.rgb},1);border-radius:3px;display:none}
 #toolbar{position:fixed;left:50%;top:18px;transform:translateX(-50%);
@@ -223,6 +235,7 @@ box-shadow:0 0 0 100000px rgba(0,0,0,0.5),inset 0 0 60px 12px rgba(${accent.rgb}
     <div class="handle h-sw" data-handle="sw"></div>
     <div class="handle h-w" data-handle="w"></div>
   </div>
+  <div id="flash"></div>
   <div id="toolbar">
     <span>Drag to set the capture area</span>
     <span id="size"></span>
@@ -306,6 +319,20 @@ box-shadow:0 0 0 100000px rgba(0,0,0,0.5),inset 0 0 60px 12px rgba(${accent.rgb}
     mode = payload.mode;
     region = payload.region || null;
     render();
+  });
+
+  var flash = document.getElementById("flash");
+  var flashTimer = null;
+  if (api.onFlash) api.onFlash(function(r){
+    flash.style.left = r.x + "px";
+    flash.style.top = r.y + "px";
+    flash.style.width = r.width + "px";
+    flash.style.height = r.height + "px";
+    flash.classList.remove("on");
+    void flash.offsetWidth; /* restart the CSS animation */
+    flash.classList.add("on");
+    if (flashTimer) clearTimeout(flashTimer);
+    flashTimer = setTimeout(function(){ flash.classList.remove("on"); }, 1800);
   });
   render();
 })();
@@ -538,6 +565,7 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  logLine(`[app] SightLine starting (v${app.getVersion()}, log at ${getLogPath() ?? "unavailable"})`);
   await loadKeysFromEnv();
 
   // One-time migration: settings saved before the opaque-by-default change
@@ -825,23 +853,33 @@ function registerIpc() {
         sessionJustStarted?: boolean;
       },
     ) => {
+      const startedAt = Date.now();
       try {
-        return await getNextInstruction(args, (chunk) => {
+        const result = await getNextInstruction(args, (chunk) => {
           if (!e.sender.isDestroyed()) {
             e.sender.send("claude:speech-chunk", chunk);
           }
         });
+        logLine(
+          `[claude] action=${result.action} in ${Date.now() - startedAt}ms ` +
+            `digression=${result.digression} needsResearch=${result.needsResearch} ` +
+            `steps=${result.completedSteps.length} highlight=${result.highlight ? "yes" : "no"}`,
+        );
+        return result;
       } catch (err) {
         if (err instanceof MissingApiKeyError) {
+          logLine("[claude] FAILED: missing API key");
           return { __error: "missing_api_key" } as const;
         }
         if (err instanceof RateLimitError) {
+          logLine(`[claude] rate limited, retry after ${err.retryAfterSec}s`);
           return {
             __error: "rate_limited",
             retryAfterSec: err.retryAfterSec,
           } as const;
         }
         const msg = err instanceof Error ? err.message : String(err);
+        logLine(`[claude] FAILED after ${Date.now() - startedAt}ms: ${msg}`);
         return { __error: "request_failed", message: msg } as const;
       }
     },
@@ -1036,7 +1074,7 @@ function registerIpc() {
           return { audioBase64: buffer.toString("base64"), engine: "google" as const };
         } catch (err) {
           googleErr = err instanceof Error ? err.message : String(err);
-          console.warn("[SightLine TTS] Google TTS failed, trying OpenAI:", googleErr);
+          logLine(`[tts] Google TTS failed, trying OpenAI: ${googleErr}`);
         }
       }
       try {
@@ -1051,7 +1089,7 @@ function registerIpc() {
         if (!googleErr && msg.includes("missing_openai_key")) {
           return { __error: "missing_openai_key" } as const;
         }
-        console.warn("[SightLine TTS] all engines failed:", googleErr, msg);
+        logLine(`[tts] all engines failed: ${googleErr} / ${msg}`);
         return {
           __error: "request_failed",
           message: [googleErr, msg].filter(Boolean).join(" / "),
@@ -1100,8 +1138,43 @@ function registerIpc() {
   ipcMain.handle("overlay:cancel-adjust", () => setGlowAdjust(false));
 
   ipcMain.on("session:log", (_e, message: string) => {
-    console.log("[renderer]", message);
+    logLine(`[renderer] ${message}`);
   });
+
+  // Open the diagnostic log in Explorer so the user can find/share it.
+  ipcMain.handle("logs:open", () => {
+    const p = getLogPath();
+    if (p && fs.existsSync(p)) shell.showItemInFolder(p);
+    else if (p) shell.openPath(path.dirname(p));
+  });
+
+  // Flash a glow box over the on-screen element the coach referred to.
+  // Coordinates arrive as fractions of the latest captured frame; the last
+  // capture's geometry maps them back to the physical display.
+  ipcMain.handle(
+    "overlay:flash-highlight",
+    (_e: IpcMainInvokeEvent, payload: { x: number; y: number; w: number; h: number }) => {
+      const geo = getLastCaptureGeometry();
+      if (!geo) return;
+      if (!glowWindow || glowWindow.isDestroyed()) return;
+      const display = screen
+        .getAllDisplays()
+        .find((d) => String(d.id) === geo.displayId);
+      if (!display) return;
+      const PAD = 6; // breathing room so the glow doesn't sit on the element's edge
+      const gb = glowWindow.getBounds();
+      const rect = {
+        x: Math.round(display.bounds.x + geo.rect.x + payload.x * geo.rect.width - gb.x) - PAD,
+        y: Math.round(display.bounds.y + geo.rect.y + payload.y * geo.rect.height - gb.y) - PAD,
+        width: Math.round(payload.w * geo.rect.width) + PAD * 2,
+        height: Math.round(payload.h * geo.rect.height) + PAD * 2,
+      };
+      logLine(
+        `[glow] flash highlight frac=(${payload.x.toFixed(2)},${payload.y.toFixed(2)},${payload.w.toFixed(2)},${payload.h.toFixed(2)}) → rect=(${rect.x},${rect.y},${rect.width},${rect.height})`,
+      );
+      glowWindow.webContents.send("glow:flash", rect);
+    },
+  );
 
   ipcMain.handle("dock:set", async (_e, payload: { docked: boolean }) => {
     wantsDock = Boolean(payload.docked);

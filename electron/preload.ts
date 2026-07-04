@@ -11,6 +11,7 @@ import type {
   DisplayInfo,
   DockState,
   GoalEvaluation,
+  HighlightRect,
   InstructionResponse,
   SessionPlan,
   Settings,
@@ -119,6 +120,9 @@ export interface SightLineApi {
     hideGlow(): Promise<void>;
     setAdjust(adjust: boolean): Promise<void>;
     onRegionUpdated(cb: (region: CaptureRegion | null) => void): () => void;
+    // Flash a short glow over an on-screen element. Coordinates are
+    // fractions (0-1) of the latest captured frame.
+    flashHighlight(rect: HighlightRect): Promise<void>;
   };
   input: {
     onActivity(cb: () => void): () => void;
@@ -137,6 +141,8 @@ export interface SightLineApi {
   };
   app: {
     quit(): Promise<void>;
+    // Reveal the diagnostic log file in Explorer.
+    openLogs(): Promise<void>;
   };
   log(message: string): void;
 }
@@ -211,6 +217,7 @@ const api: SightLineApi = {
       ipcRenderer.on("overlay:region-updated", handler);
       return () => ipcRenderer.removeListener("overlay:region-updated", handler);
     },
+    flashHighlight: (rect) => ipcRenderer.invoke("overlay:flash-highlight", rect),
   },
   input: {
     onActivity: (cb) => {
@@ -232,6 +239,7 @@ const api: SightLineApi = {
   },
   app: {
     quit: () => ipcRenderer.invoke("app:quit"),
+    openLogs: () => ipcRenderer.invoke("logs:open"),
   },
   log: (message) => ipcRenderer.send("session:log", message),
 };

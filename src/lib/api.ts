@@ -22,6 +22,7 @@ export type {
   DisplayInfo,
   DockSide,
   DockState,
+  HighlightRect,
   InstructionAction,
   InstructionResponse,
   SessionPlan,

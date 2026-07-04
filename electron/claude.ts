@@ -11,6 +11,7 @@ import type {
 } from "./types";
 import { getKey } from "./credentials";
 import { InstructionChunker, type SpeechChunk } from "./speech-chunker";
+import { extractJson, parseInstruction } from "./instruction-parse";
 
 const MODEL = "claude-sonnet-4-6";
 const MAX_TOKENS = 800;
@@ -95,12 +96,13 @@ ${SHARED_FIELD_RULES}`;
 
 const TECH_SUPPORT_OUTPUT_RULES = `Output rules:
 - Respond with a JSON object only, no prose around it, no code fences.
-- Schema: {"action": "instruct"|"wait"|"acknowledge"|"check_in"|"done", "expected_pace": "quick"|"medium"|"long", "instruction": string, "completed_steps": string[], "upcoming_steps": string[], "digression": boolean, "needsResearch": boolean, "researchQuery": string, "notes": string}
+- Schema: {"action": "instruct"|"wait"|"acknowledge"|"check_in"|"done", "expected_pace": "quick"|"medium"|"long", "instruction": string, "completed_steps": string[], "upcoming_steps": string[], "digression": boolean, "needsResearch": boolean, "researchQuery": string, "notes": string, "highlight": {"x": number, "y": number, "w": number, "h": number} | null}
 - Output the "action" key FIRST, before everything else.
 - "action" is your pacing decision per the mode rules above. When action is "wait", set instruction to an empty string.
 - "expected_pace" applies to the step you're giving in an "instruct" — "medium" otherwise.
 - "instruction" is your next message to the user — conversational tone, under 60 words. Empty string when action is "wait".
-${SHARED_FIELD_RULES}`;
+${SHARED_FIELD_RULES}
+- "highlight": when an "instruct" tells the user to click or find ONE specific element that is VISIBLE in the latest screenshot (a button, tab, menu item, field), set this to that element's bounding box as fractions of the screenshot's width and height (x/y = top-left corner, w/h = size, all 0-1). The app flashes a glow there to help the user find it. Be generous with the box (pad it slightly). Set null when there's no single visible target, and always null for actions other than "instruct".`;
 
 const MODE_INTROS: Record<AppMode, string> = {
   tech_support: TECH_SUPPORT_INTRO,
@@ -337,7 +339,7 @@ function buildContextHeader(args: NextInstructionArgs, frameCount: number): stri
   }
   if (args.stalled) {
     parts.push(
-      `The screen has been still for a while. The user may be working slowly, reading, or stuck. Choose check_in if you haven't spoken recently, otherwise wait. If the screen looks unrelated to the goal or looks frozen, ask which screen or monitor they're working on — the watched screen may be the wrong one; they can switch it from the screen picker.`,
+      `The screen has been still for a while. FIRST compare the latest screenshot against your previous instruction: if the user already completed that step, give the NEXT step now (action=instruct) — don't make them wait or ask. If they genuinely haven't acted yet, they may be working slowly, reading, or stuck: choose check_in if you haven't spoken recently, otherwise wait. If the screen looks unrelated to the goal or looks frozen, ask which screen or monitor they're working on — the watched screen may be the wrong one; they can switch it from the screen picker.`,
     );
   }
   if (args.sessionJustStarted && args.mode === "tech_support") {
@@ -378,75 +380,6 @@ type ImageMediaType = "image/png" | "image/jpeg" | "image/webp" | "image/gif";
 function mediaTypeOf(dataUrl: string): ImageMediaType {
   const m = /^data:(image\/(?:png|jpeg|webp|gif));/.exec(dataUrl);
   return (m?.[1] as ImageMediaType) ?? "image/png";
-}
-
-const VALID_ACTIONS = new Set(["instruct", "wait", "acknowledge", "check_in", "done"]);
-const VALID_PACES = new Set(["quick", "medium", "long"]);
-
-function parseInstruction(
-  text: string,
-  previousSteps: string[],
-): InstructionResponse {
-  const json = extractJson(text);
-  if (json) {
-    try {
-      const obj = JSON.parse(json) as {
-        action?: string;
-        expected_pace?: string;
-        instruction?: string;
-        completed_steps?: string[];
-        upcoming_steps?: string[];
-        digression?: boolean;
-        done?: boolean;
-        needsResearch?: boolean;
-        researchQuery?: string;
-        notes?: string;
-      };
-      // Modes that don't emit an action (training/teacher) default to
-      // "instruct"/"done" so their behavior is unchanged.
-      const action =
-        obj.action && VALID_ACTIONS.has(obj.action)
-          ? (obj.action as InstructionResponse["action"])
-          : obj.done
-            ? "done"
-            : "instruct";
-      const instruction = (obj.instruction ?? "").trim();
-      return {
-        action,
-        expectedPace:
-          obj.expected_pace && VALID_PACES.has(obj.expected_pace)
-            ? (obj.expected_pace as InstructionResponse["expectedPace"])
-            : "medium",
-        instruction: action === "wait" ? instruction : instruction || text,
-        completedSteps: Array.isArray(obj.completed_steps)
-          ? obj.completed_steps.map(String)
-          : previousSteps,
-        upcomingSteps: Array.isArray(obj.upcoming_steps)
-          ? obj.upcoming_steps.map(String)
-          : [],
-        digression: Boolean(obj.digression),
-        done: action === "done" || Boolean(obj.done),
-        needsResearch: Boolean(obj.needsResearch),
-        researchQuery: (obj.researchQuery ?? "").trim(),
-        notes: (obj.notes ?? "").trim(),
-      };
-    } catch {
-      // fall through
-    }
-  }
-  // Fallback: treat whole response as the instruction.
-  return {
-    action: "instruct",
-    expectedPace: "medium",
-    instruction: text || "Continue with the next step.",
-    completedSteps: previousSteps,
-    upcomingSteps: [],
-    digression: false,
-    done: false,
-    needsResearch: false,
-    researchQuery: "",
-    notes: "",
-  };
 }
 
 const CLARIFICATION_SYSTEM_PROMPT: Record<AppMode, string> = {
@@ -659,15 +592,4 @@ export async function getGoalEvaluation(args: {
     // fail safe
   }
   return { achieved: false, verdict: "Couldn't evaluate at this time. Keep going — you're making progress!" };
-}
-
-function extractJson(text: string): string | null {
-  // Strip code fences if present.
-  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = fence ? fence[1].trim() : text.trim();
-  // Find outermost { ... } pair.
-  const start = candidate.indexOf("{");
-  const end = candidate.lastIndexOf("}");
-  if (start < 0 || end <= start) return null;
-  return candidate.slice(start, end + 1);
 }

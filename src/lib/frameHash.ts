@@ -1,8 +1,25 @@
-// Perceptual hash: average luminance over an 8x8 grid, then compare each cell
-// to the overall mean. The resulting 64-bit fingerprint is robust to mouse
-// cursor movement, blinking carets, and small clock-style timer changes.
-const GRID = 8;
-const SAMPLE = 32; // downsample target before binning
+// Screen-change signature: mean luminance of each cell in a 16x16 grid,
+// quantized to one byte per cell and hex-encoded (512 chars).
+//
+// Two signatures are compared cell by cell; a cell "changed" when its
+// luminance moved by more than CELL_DELTA. This is far more sensitive than
+// the old 64-bit average-hash (which only noticed a change when a cell
+// crossed the global mean — clicking a tab or button usually flipped ZERO
+// bits, so the session loop never saw the user's progress), while still
+// ignoring cursor movement and blinking carets, which are much smaller than
+// one cell.
+const GRID = 16;
+const SAMPLE = 64; // downsample target before binning (4x4 px per cell)
+
+// Minimum per-cell luminance move (0-255) to count the cell as changed.
+// Averaged over a cell, a text caret or cursor shifts luminance by ~1-3;
+// real UI changes (a panel, dialog, new rows of content) shift it by far more.
+const CELL_DELTA = 8;
+
+// Cells that must change for the screen to count as "changed". 2 cells of
+// 256 tolerates a moved cursor sitting on a cell boundary plus one blinking
+// element; a click that opens or alters anything visible touches more.
+const CHANGED_CELLS_THRESHOLD = 2;
 
 export async function hashFrame(dataUrl: string): Promise<string> {
   if (!dataUrl) return "";
@@ -32,19 +49,12 @@ export async function hashFrame(dataUrl: string): Promise<string> {
           }
         }
         const cellPixels = cellSize * cellSize;
-        let mean = 0;
+        let out = "";
         for (let i = 0; i < cells.length; i++) {
-          cells[i] /= cellPixels;
-          mean += cells[i];
+          const v = Math.max(0, Math.min(255, Math.round(cells[i] / cellPixels)));
+          out += v.toString(16).padStart(2, "0");
         }
-        mean /= cells.length;
-
-        // Hex bitstring, one bit per cell.
-        let bits = 0n;
-        for (let i = 0; i < cells.length; i++) {
-          if (cells[i] >= mean) bits |= 1n << BigInt(i);
-        }
-        resolve(bits.toString(16).padStart(16, "0"));
+        resolve(out);
       } catch {
         resolve("");
       }
@@ -54,28 +64,25 @@ export async function hashFrame(dataUrl: string): Promise<string> {
   });
 }
 
-// Hamming distance between two perceptual hashes.
-function hammingDistance(a: string, b: string): number {
-  if (!a || !b) return Number.POSITIVE_INFINITY;
-  try {
-    const xa = BigInt("0x" + a);
-    const xb = BigInt("0x" + b);
-    let v = xa ^ xb;
-    let count = 0;
-    while (v !== 0n) {
-      count++;
-      v &= v - 1n;
-    }
-    return count;
-  } catch {
+/**
+ * Number of grid cells whose luminance moved by more than CELL_DELTA.
+ * Infinity when either signature is missing or they're incomparable
+ * (different lengths — e.g. a signature from an older version).
+ */
+export function hashDistance(a: string, b: string): number {
+  if (!a || !b || a.length !== b.length || a.length % 2 !== 0) {
     return Number.POSITIVE_INFINITY;
   }
+  let changed = 0;
+  for (let i = 0; i < a.length; i += 2) {
+    const va = parseInt(a.slice(i, i + 2), 16);
+    const vb = parseInt(b.slice(i, i + 2), 16);
+    if (Number.isNaN(va) || Number.isNaN(vb)) return Number.POSITIVE_INFINITY;
+    if (Math.abs(va - vb) > CELL_DELTA) changed++;
+  }
+  return changed;
 }
 
-// A 64-bit perceptual hash; distances under ~8 typically mean "visually the
-// same screen with minor noise" (cursor, caret, small text changes).
-const SIMILARITY_THRESHOLD = 8;
-
 export function hashesAreSimilar(a: string, b: string): boolean {
-  return hammingDistance(a, b) <= SIMILARITY_THRESHOLD;
+  return hashDistance(a, b) <= CHANGED_CELLS_THRESHOLD;
 }

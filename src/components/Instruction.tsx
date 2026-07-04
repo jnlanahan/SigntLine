@@ -8,6 +8,8 @@ interface Props {
   done: boolean;
   error: string | null;
   researchQuery?: string | null;
+  // "I did this" — tells the coach the step is complete without typing.
+  onStepDone?: () => void;
 }
 
 // Soft typewriter reveal — caps at ~140 chars so longer responses don't
@@ -38,9 +40,10 @@ function useTypewriter(text: string): string {
   return shown;
 }
 
-export function Instruction({ instruction, status, done, error, researchQuery }: Props) {
+export function Instruction({ instruction, status, done, error, researchQuery, onStepDone }: Props) {
   const T = useTheme();
   const display = useTypewriter(instruction);
+  const busy = status === "thinking" || status === "evaluating";
 
   if (error) {
     return (
@@ -185,7 +188,7 @@ export function Instruction({ instruction, status, done, error, researchQuery }:
       <div
         className="sl-selectable animate-fade-in"
         style={{
-          marginTop: 8, fontFamily: T.display, fontSize: 15.5,
+          marginTop: 8, fontFamily: T.font, fontSize: 14.5, fontWeight: 500,
           lineHeight: 1.55, color: "#F4F1E8",
         }}
       >
@@ -201,6 +204,32 @@ export function Instruction({ instruction, status, done, error, researchQuery }:
           />
         )}
       </div>
+      {onStepDone && (
+        <button
+          type="button"
+          className="no-drag"
+          onClick={onStepDone}
+          disabled={busy}
+          title="Tell the coach you finished this step"
+          style={{
+            marginTop: 12, width: "100%",
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
+            padding: "9px 12px", border: 0, borderRadius: 10,
+            background: busy
+              ? "rgba(244,241,232,0.12)"
+              : `linear-gradient(180deg, ${T.accent}, ${T.accentDeep})`,
+            color: busy ? "rgba(244,241,232,0.45)" : T.onAccent,
+            fontSize: 12.5, fontWeight: 700, letterSpacing: "0.02em",
+            cursor: busy ? "default" : "pointer",
+            transition: "opacity 150ms",
+          }}
+        >
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden>
+            <path d="M2 7l3 3 6-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          {busy ? "One sec…" : "I did this — next step"}
+        </button>
+      )}
     </div>
   );
 }

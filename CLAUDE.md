@@ -56,6 +56,8 @@ The loop is a self-rescheduling `setTimeout` chain (not `setInterval`). Claude i
 
 Timing constants are locked by regression tests in `src/__tests__/sessionLoop.timing.test.ts` — changing one means updating the test deliberately.
 
+**Diagnostics:** every tick decision (skip reason, screen-change distance, Claude action + latency, TTS events) is appended to `%APPDATA%/sightline/logs/sightline.log` via `electron/log.ts`; renderer logs route through the `session:log` IPC. "Why did it go quiet?" is answered by grepping `[loop]` lines there — do not remove these logs. Screen-change detection lives in `src/lib/frameHash.ts` (16×16 luminance-cell signature; "changed" = >2 cells moving >8 luma) and the tick gate in `src/lib/loopGate.ts` — both unit-tested. Keep them sensitive: the historical failure mode was the app going silent because small UI changes (clicked tabs/buttons) hashed as "same screen".
+
 ## Claude integration
 
 `electron/claude.ts` streams the response; `speech-chunker.ts` extracts the `"instruction"` field incrementally and each completed **sentence** is sent to the renderer (`claude:speech-chunk`) while the response is still generating — TTS starts on the first sentence, and later sentences synthesize while earlier ones play. In tech_support mode chunks are gated on the `"action"` key (emitted first in the schema) so a `wait` never speaks. The per-mode system prompts live at the top of `claude.ts` (`MODE_INTROS`, `VOICE_RULES`, output rules); the system prompt is byte-identical across ticks and marked with `cache_control` for prompt caching — don't put timestamps or per-tick data in it (that belongs in the user message via `buildContextHeader`).

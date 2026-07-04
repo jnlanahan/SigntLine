@@ -53,6 +53,16 @@ export type InstructionAction =
 // stall check-in timer in the session loop.
 export type StepPace = "quick" | "medium" | "long";
 
+// Bounding box of the on-screen element the user should click, as fractions
+// (0-1) of the latest screenshot's width/height. Flashed as a glow box on
+// the real screen so the user can find the target.
+export interface HighlightRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface InstructionResponse {
   action: InstructionAction;
   expectedPace: StepPace;
@@ -64,6 +74,7 @@ export interface InstructionResponse {
   needsResearch: boolean;
   researchQuery: string;
   notes: string;
+  highlight: HighlightRect | null;
 }
 
 export interface UploadedContext {
@@ -215,6 +226,8 @@ export type IpcChannel =
   | "overlay:show-glow"
   | "overlay:hide-glow"
   | "overlay:set-adjust"
+  | "overlay:flash-highlight"
+  | "logs:open"
   | "overlay:commit-region"
   | "overlay:cancel-adjust"
   | "tts:speak"

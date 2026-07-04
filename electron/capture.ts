@@ -98,6 +98,21 @@ export interface CaptureSelection {
   sourceName?: string | null;
 }
 
+// Geometry of the most recent capture: which display it came from and the
+// display-relative DIP rect the frame covers (after dock-strip subtraction
+// and region cropping). Lets highlight coordinates expressed as fractions of
+// the screenshot be mapped back onto the physical screen.
+export interface CaptureGeometry {
+  displayId: string;
+  rect: CaptureRegion;
+}
+
+let lastCaptureGeometry: CaptureGeometry | null = null;
+
+export function getLastCaptureGeometry(): CaptureGeometry | null {
+  return lastCaptureGeometry;
+}
+
 // Resolve the display whose geometry drives grab sizing and region cropping.
 // A pinned source's CALIBRATED display wins — it's the screen actually being
 // captured — falling back to the stored displayId only when unknown.
@@ -253,6 +268,16 @@ export async function captureFrame(
   if (cropped.width > MAX_PAYLOAD_WIDTH) {
     image = image.resize({ width: MAX_PAYLOAD_WIDTH });
   }
+
+  lastCaptureGeometry = {
+    displayId: String(target.id),
+    rect: effectiveRegion ?? {
+      x: 0,
+      y: 0,
+      width: target.size.width,
+      height: target.size.height,
+    },
+  };
 
   const size = image.getSize();
   return {

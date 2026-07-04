@@ -6,8 +6,17 @@ export interface GlowMode {
   region: CaptureRegion | null;
 }
 
+// Window-relative rect (CSS px) to flash a click-target glow over.
+export interface GlowFlashRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface GlowApi {
   onSetMode(cb: (payload: GlowMode) => void): () => void;
+  onFlash(cb: (rect: GlowFlashRect) => void): () => void;
   commit(region: CaptureRegion | null): Promise<void>;
   cancel(): Promise<void>;
 }
@@ -18,6 +27,12 @@ const glowApi: GlowApi = {
       cb(payload);
     ipcRenderer.on("glow:set-mode", handler);
     return () => ipcRenderer.removeListener("glow:set-mode", handler);
+  },
+  onFlash: (cb) => {
+    const handler = (_: Electron.IpcRendererEvent, rect: GlowFlashRect) =>
+      cb(rect);
+    ipcRenderer.on("glow:flash", handler);
+    return () => ipcRenderer.removeListener("glow:flash", handler);
   },
   commit: (region) => ipcRenderer.invoke("overlay:commit-region", { region }),
   cancel: () => ipcRenderer.invoke("overlay:cancel-adjust"),

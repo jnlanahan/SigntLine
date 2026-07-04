@@ -341,6 +341,26 @@ export function Settings({ onClose }: Props) {
           />
         </div>
 
+        {/* Diagnostics */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <span style={sectionLabel}>Diagnostics</span>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+            <div style={{ display: "flex", flexDirection: "column" }}>
+              <span style={{ fontSize: 12.5, fontWeight: 500, color: T.ink }}>Activity log</span>
+              <span style={{ marginTop: 2, fontSize: 10, color: T.ink3 }}>
+                Records why the coach spoke or stayed quiet — share this file when reporting a problem
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => void api().app.openLogs()}
+              style={ghostBtnStyle}
+            >
+              Open log file
+            </button>
+          </div>
+        </div>
+
         {/* Footer */}
         <div style={{
           marginTop: 4, textAlign: "center",

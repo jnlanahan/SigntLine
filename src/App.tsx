@@ -112,7 +112,7 @@ export default function App() {
   const { cancel: cancelTts } = useTts();
 
   const openSettings = useCallback(() => setView("settings"), []);
-  useSessionLoop(openSettings, focused);
+  useSessionLoop(openSettings);
 
   useEffect(() => { void loadSettings(); }, [loadSettings]);
 
@@ -448,6 +448,11 @@ export default function App() {
                 done={done}
                 error={error}
                 researchQuery={researchQuery}
+                onStepDone={
+                  mode === "tech_support"
+                    ? () => submitFollowUp("Done — what's next?")
+                    : undefined
+                }
               />
             </div>
             {evalResult && (
