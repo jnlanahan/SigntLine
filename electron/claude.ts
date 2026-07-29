@@ -18,6 +18,7 @@ import { PLAN_RESEARCH_RULE, SHARED_FIELD_RULES, VOICE_RULES } from "./agents/sh
 import {
   techSupportSystemPrompt,
   TECH_SUPPORT_CLARIFICATION_PROMPT,
+  TECH_SUPPORT_FOLLOW_UP_GUIDANCE,
   TECH_SUPPORT_NEXT_TURN_PROMPT,
   TECH_SUPPORT_PLAN_PROMPT,
   TECH_SUPPORT_SESSION_START_GUIDANCE,
@@ -26,6 +27,7 @@ import {
 import {
   trainingSystemPrompt,
   TRAINING_CLARIFICATION_PROMPT,
+  TRAINING_FOLLOW_UP_GUIDANCE,
   TRAINING_NEXT_TURN_PROMPT,
   TRAINING_PLAN_PROMPT,
   TRAINING_SESSION_START_GUIDANCE,
@@ -34,6 +36,7 @@ import {
 import {
   teacherSystemPrompt,
   TEACHER_CLARIFICATION_PROMPT,
+  TEACHER_FOLLOW_UP_GUIDANCE,
   TEACHER_NEXT_TURN_PROMPT,
   TEACHER_PLAN_PROMPT,
   TEACHER_SESSION_START_GUIDANCE,
@@ -283,6 +286,12 @@ const SESSION_START_GUIDANCE: Record<AppMode, string> = {
   teacher: TEACHER_SESSION_START_GUIDANCE,
 };
 
+const FOLLOW_UP_GUIDANCE: Record<AppMode, string> = {
+  tech_support: TECH_SUPPORT_FOLLOW_UP_GUIDANCE,
+  training: TRAINING_FOLLOW_UP_GUIDANCE,
+  teacher: TEACHER_FOLLOW_UP_GUIDANCE,
+};
+
 function buildContextHeader(args: NextInstructionArgs, frameCount: number): string {
   const stepsList =
     args.completedSteps.length === 0
@@ -340,6 +349,9 @@ function buildContextHeader(args: NextInstructionArgs, frameCount: number): stri
   }
   if (args.sessionJustStarted) {
     parts.push(SESSION_START_GUIDANCE[args.mode]);
+  }
+  if (args.followUp && args.followUp.trim().length > 0) {
+    parts.push(FOLLOW_UP_GUIDANCE[args.mode]);
   }
   parts.push(NEXT_TURN_PROMPT[args.mode]);
   return parts.join("\n\n");

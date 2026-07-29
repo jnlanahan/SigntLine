@@ -3,6 +3,7 @@ import { useSession } from "../store/session";
 import {
   preprocessForTts,
   COMPLETION_PHRASES,
+  NO_ANSWER_PHRASES,
   THINKING_PHRASES,
   WAITING_PHRASES,
 } from "../../electron/tts/shared";
@@ -11,7 +12,12 @@ import {
 // pre-synthesize it at startup without an IPC round-trip. Re-exported here
 // because this is where the rest of the renderer expects to find it — one
 // definition, so a phrase can never drift out of the warm cache.
-export { COMPLETION_PHRASES, THINKING_PHRASES, WAITING_PHRASES };
+export {
+  COMPLETION_PHRASES,
+  NO_ANSWER_PHRASES,
+  THINKING_PHRASES,
+  WAITING_PHRASES,
+};
 
 function pickRandom<T>(arr: readonly T[], avoid?: T): T {
   if (arr.length === 1) return arr[0];
@@ -25,6 +31,7 @@ function pickRandom<T>(arr: readonly T[], avoid?: T): T {
 let lastWaitingPhrase: string | undefined;
 let lastCompletionPhrase: string | undefined;
 let lastThinkingPhrase: string | undefined;
+let lastNoAnswerPhrase: string | undefined;
 
 export function randomWaitingPhrase(): string {
   lastWaitingPhrase = pickRandom(WAITING_PHRASES, lastWaitingPhrase);
@@ -39,6 +46,11 @@ export function randomCompletionPhrase(): string {
 export function randomThinkingPhrase(): string {
   lastThinkingPhrase = pickRandom(THINKING_PHRASES, lastThinkingPhrase);
   return lastThinkingPhrase;
+}
+
+export function randomNoAnswerPhrase(): string {
+  lastNoAnswerPhrase = pickRandom(NO_ANSWER_PHRASES, lastNoAnswerPhrase);
+  return lastNoAnswerPhrase;
 }
 
 // Module-level audio state so cancel() works across renders.
@@ -118,13 +130,46 @@ type CloudAudio =
 
 // Kick off cloud synthesis for one chunk. Called the moment a chunk is
 // enqueued, so chunk N+1 synthesizes while chunk N is still playing.
-async function fetchCloudAudio(text: string): Promise<CloudAudio> {
+// Cap on synthesis requests in flight at once.
+//
+// Speech is pipelined — chunk N+1 is synthesized while chunk N plays — which
+// is what makes the coach feel responsive. But a fast multi-sentence response
+// can put four requests in the air simultaneously, and ElevenLabs' free tier
+// allows two. The rejected chunk downgrades the REST of that response to the
+// system voice, so the coach starts well and then turns robotic mid-answer.
+// Queuing instead costs nothing on paid plans (the pipeline is still a chunk
+// ahead of playback) and prevents that entirely.
+const MAX_CONCURRENT_SYNTHESIS = 2;
+
+let inFlightSynthesis = 0;
+const synthesisWaiters: Array<() => void> = [];
+
+async function acquireSynthesisSlot(): Promise<void> {
+  if (inFlightSynthesis < MAX_CONCURRENT_SYNTHESIS) {
+    inFlightSynthesis++;
+    return;
+  }
+  await new Promise<void>((resolve) => synthesisWaiters.push(resolve));
+  inFlightSynthesis++;
+}
+
+function releaseSynthesisSlot(): void {
+  inFlightSynthesis--;
+  const next = synthesisWaiters.shift();
+  if (next) next();
+}
+
+async function fetchCloudAudio(
+  text: string,
+  previousText: string,
+): Promise<CloudAudio> {
+  await acquireSynthesisSlot();
   try {
     // Bound the IPC round-trip. The main process already times out each TTS
     // provider, but this is a final guard so a stuck channel can never leave
     // playback hung — on timeout we fall through to the web-speech fallback.
     const result = await withTimeout(
-      api().tts.speak(text),
+      api().tts.speak(text, previousText),
       20_000,
       "tts_ipc_timeout",
     );
@@ -140,6 +185,10 @@ async function fetchCloudAudio(text: string): Promise<CloudAudio> {
     console.warn("[SightLine TTS] cloud TTS failed:", err);
     api().log(`[tts] cloud failed: ${msg}`);
     return { ok: false, message: msg };
+  } finally {
+    // Must release on every path — a leaked slot would permanently shrink the
+    // pipeline and eventually deadlock all speech.
+    releaseSynthesisSlot();
   }
 }
 
@@ -269,6 +318,11 @@ export function openSpeechStream(): SpeechStream {
   const queue: QueueItem[] = [];
   let ended = false;
   let pumping = false;
+  // Everything enqueued so far in THIS response. Sent with each subsequent
+  // chunk so the provider continues the same delivery rather than starting a
+  // fresh performance every sentence — without it, intonation wanders and the
+  // occasional sentence comes out shouted.
+  let spokenSoFar = "";
   // Once one chunk falls back to the system voice, all later chunks in this
   // stream do too — speechSynthesis queues utterances natively, and mixing
   // voices mid-stream sounds broken.
@@ -326,11 +380,16 @@ export function openSpeechStream(): SpeechStream {
       const trimmed = preprocessForTts(text.trim());
       if (!trimmed) return;
       api().log(`[tts] enqueue (gen ${gen}): "${trimmed.slice(0, 40)}"`);
+      // Capture the context BEFORE appending this chunk — the first chunk of a
+      // response has no predecessor, which is also what keeps the warmed
+      // phrase cache hitting for fillers.
+      const previousText = spokenSoFar;
+      spokenSoFar = spokenSoFar ? `${spokenSoFar} ${trimmed}` : trimmed;
       queue.push({
         text: trimmed,
         audioPromise: degraded
           ? Promise.resolve({ ok: false, message: "degraded" })
-          : fetchCloudAudio(trimmed),
+          : fetchCloudAudio(trimmed, previousText),
       });
       void pump();
     },

@@ -13,6 +13,7 @@ import {
   ELEVEN_VOICE_PRESETS,
   DEFAULT_ELEVEN_VOICE_ID,
   clampTtsText,
+  trimPreviousText,
 } from "./shared";
 
 const API_BASE = "https://api.elevenlabs.io/v1";
@@ -45,7 +46,13 @@ let resolvedFallbackVoice: string | null = null;
  */
 export async function speakTextElevenLabs(
   text: string,
-  opts: { voiceId?: string; speed?: number; signal?: AbortSignal } = {},
+  opts: {
+    voiceId?: string;
+    speed?: number;
+    signal?: AbortSignal;
+    /** What was already spoken in this response — see SynthRequest. */
+    previousText?: string;
+  } = {},
 ): Promise<Buffer> {
   const key = await apiKey();
   if (!key) throw new Error("missing_elevenlabs_key");
@@ -55,20 +62,35 @@ export async function speakTextElevenLabs(
     voiceId = (await accountFallbackVoice(key)) ?? DEFAULT_ELEVEN_VOICE_ID;
   }
 
-  const body = {
+  const previous = trimPreviousText(opts.previousText);
+
+  const body: Record<string, unknown> = {
     text: clampTtsText(text),
     model_id: ELEVEN_MODEL,
     voice_settings: {
-      // Tuned for a coach, not an audiobook narrator. Moderate stability keeps
-      // the delivery even without flattening it; a little style adds the
-      // conversational lilt that makes it read as a person.
-      stability: 0.45,
+      // Tuned for CONSISTENCY across a chunked response, not for drama.
+      //
+      // Each sentence is a separate request, so any per-request randomness
+      // shows up as the voice changing character mid-answer. The earlier
+      // settings (stability 0.45, style 0.35, speaker boost on) were tuned for
+      // expressiveness and produced exactly that: wandering intonation and the
+      // occasional shouted sentence.
+      //
+      // Higher stability = less variation between generations. style is the
+      // main amplifier of both expressiveness and instability, so for a coach
+      // reading short factual instructions it earns nothing and costs
+      // predictability — it is off. Speaker boost is off too: it raises
+      // perceived loudness (part of the "yelling") and adds latency.
+      stability: 0.72,
       similarity_boost: 0.75,
-      style: 0.35,
-      use_speaker_boost: true,
+      style: 0,
+      use_speaker_boost: false,
       speed: clampSpeed(opts.speed),
     },
   };
+  // Request stitching: tell the model what was already said so this sentence
+  // continues the same delivery instead of starting a fresh performance.
+  if (previous) body.previous_text = previous;
 
   const resp = await fetch(
     `${API_BASE}/text-to-speech/${encodeURIComponent(voiceId)}/stream` +

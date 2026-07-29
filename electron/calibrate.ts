@@ -8,7 +8,7 @@
 // Pixels don't lie; IDs do.
 
 import { BrowserWindow, desktopCapturer, screen } from "electron";
-import { markerRatio, pickMarkerSource } from "./calibrate-detect";
+import { MARKER_COLOR, markerRatio, pickMarkerSource } from "./calibrate-detect";
 
 export interface CalibrationResult {
   // desktopCapturer source.id -> String(display.id)
@@ -27,10 +27,20 @@ const THUMB_SIZE = { width: 320, height: 200 };
 const MARKER_PAINT_DELAY_MS = 300; // compositor needs a frame or two after show
 const RETRY_DELAY_MS = 400;
 
+// The marker has to cover most of a display in a colour the detector can pick
+// out of a thumbnail (see calibrate-detect.ts: MIN_MARKER_RATIO is 0.35, so a
+// small patch cannot work). MARKER_COLOR lives in that module beside the
+// thresholds it must satisfy.
 const MARKER_HTML =
   "data:text/html;charset=utf-8," +
   encodeURIComponent(
-    "<!DOCTYPE html><html><body style='margin:0;background:#f0f'></body></html>",
+    `<!DOCTYPE html><html><body style="margin:0;background:${MARKER_COLOR};` +
+      `display:flex;align-items:center;justify-content:center;` +
+      `font-family:'Segoe UI',system-ui,sans-serif;color:rgba(255,255,255,0.92)">` +
+      `<div style="text-align:center">` +
+      `<div style="font-size:20px;font-weight:600;letter-spacing:0.01em">SightLine</div>` +
+      `<div style="font-size:14px;margin-top:6px;opacity:0.85">Checking which screen is which…</div>` +
+      `</div></body></html>`,
   );
 
 let cached: CalibrationResult | null = null;
@@ -203,22 +213,56 @@ export async function getCalibration(force = false): Promise<CalibrationResult> 
 // Kick off the first calibration and keep the mapping fresh across monitor
 // plug/unplug/DPI changes. onChange fires with each new result so main.ts can
 // re-place the glow overlay on the (possibly re-identified) watched screen.
+/**
+ * Identity of the current monitor set-up, for deciding whether a previous
+ * calibration is still valid.
+ *
+ * Deliberately excludes `workArea`: docking reserves a strip via the Windows
+ * AppBar API, which changes the work area and fires display-metrics-changed.
+ * Including it meant the app's own docking triggered a full recalibration —
+ * i.e. SightLine flashed magenta across every monitor because it docked
+ * itself. `bounds` still catches genuine resolution and arrangement changes.
+ */
+function displayFingerprint(): string {
+  return screen
+    .getAllDisplays()
+    .map(
+      (d) =>
+        `${d.id}@${d.bounds.x},${d.bounds.y},${d.bounds.width}x${d.bounds.height}` +
+        `:${d.scaleFactor}:${d.rotation}`,
+    )
+    .sort()
+    .join("|");
+}
+
+let lastFingerprint: string | null = null;
+
 export function initCalibration(onChange?: (r: CalibrationResult) => void): void {
   onChangeCb = onChange ?? null;
+  lastFingerprint = displayFingerprint();
   let debounce: ReturnType<typeof setTimeout> | null = null;
-  const recalibrate = () => {
+  const maybeRecalibrate = () => {
     if (debounce) clearTimeout(debounce);
     debounce = setTimeout(() => {
       debounce = null;
+      const next = displayFingerprint();
+      if (next === lastFingerprint) {
+        // Work-area-only change (almost always our own dock). The
+        // source-to-display mapping cannot have changed, so there is nothing
+        // to re-probe — and re-probing would flash every screen magenta.
+        return;
+      }
+      console.log("[calibrate] display set changed — recalibrating");
+      lastFingerprint = next;
       invalidateCalibration();
       void getCalibration(true).catch((err) =>
         console.warn("[calibrate] recalibration failed:", err),
       );
     }, 1_000);
   };
-  screen.on("display-added", recalibrate);
-  screen.on("display-removed", recalibrate);
-  screen.on("display-metrics-changed", recalibrate);
+  screen.on("display-added", maybeRecalibrate);
+  screen.on("display-removed", maybeRecalibrate);
+  screen.on("display-metrics-changed", maybeRecalibrate);
   void getCalibration().catch((err) =>
     console.warn("[calibrate] initial calibration failed:", err),
   );

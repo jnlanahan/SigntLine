@@ -113,7 +113,9 @@ export interface SightLineApi {
     dragEnd(): void;
   };
   tts: {
-    speak(text: string): Promise<
+    // previousText is what the coach already said in THIS response; it keeps
+    // prosody continuous across sentence-by-sentence synthesis.
+    speak(text: string, previousText?: string): Promise<
       | { audioBase64: string; engine: TtsEngine; cached: boolean; ms: number }
       | { __error: "missing_tts_provider"; message: string }
       | { __error: "request_failed"; message: string }
@@ -240,7 +242,8 @@ const api: SightLineApi = {
     dragEnd: () => ipcRenderer.send("window:drag-end"),
   },
   tts: {
-    speak: (text) => ipcRenderer.invoke("tts:speak", { text }),
+    speak: (text, previousText) =>
+      ipcRenderer.invoke("tts:speak", { text, previousText }),
     listVoices: () => ipcRenderer.invoke("tts:list-voices"),
   },
   research: {

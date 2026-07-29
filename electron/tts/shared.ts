@@ -10,6 +10,34 @@ export interface SynthRequest {
   voice: string;
   model: string;
   speed: number;
+  /**
+   * What the coach already said earlier in this same response.
+   *
+   * The coach speaks sentence by sentence, and each sentence is a separate
+   * API call. Without this, the provider has no idea the sentence is the
+   * middle of a paragraph and re-invents the intonation every time — which
+   * is audible as the voice randomly changing pitch and emphasis between
+   * sentences, and occasionally landing on a shouted one. Providers call this
+   * "request stitching"; it is what makes a chunked response sound like one
+   * person talking instead of several takes spliced together.
+   */
+  previousText?: string;
+}
+
+/**
+ * How much prior context to send. Enough for the model to hear the run-up to
+ * this sentence, short enough not to bloat every request.
+ */
+export const MAX_PREVIOUS_TEXT_CHARS = 400;
+
+export function trimPreviousText(text: string | undefined): string {
+  if (!text) return "";
+  const t = text.trim().replace(/\s+/g, " ");
+  if (t.length <= MAX_PREVIOUS_TEXT_CHARS) return t;
+  // Keep the END of the prior text — that's what this sentence follows on from.
+  const tail = t.slice(-MAX_PREVIOUS_TEXT_CHARS);
+  const firstSpace = tail.indexOf(" ");
+  return firstSpace > 0 ? tail.slice(firstSpace + 1) : tail;
 }
 
 /**
@@ -17,6 +45,19 @@ export interface SynthRequest {
  * must be part of the key, or the cache would serve the wrong voice after a
  * settings change.
  */
+/**
+ * Bumped whenever the voice_settings sent to a provider change.
+ *
+ * Cached audio was produced under the settings in force at the time, so
+ * without this a prosody fix is inaudible for every already-cached phrase —
+ * the coach would keep replaying the old delivery for its most common lines.
+ * Bumping this invalidates them; the old files age out of the cache normally.
+ *
+ * v2: stability 0.45 -> 0.72, style 0.35 -> 0, speaker boost off, and
+ *     request stitching added, to stop intonation wandering between sentences.
+ */
+export const VOICE_SETTINGS_VERSION = "v2";
+
 export function cacheKeyFor(req: SynthRequest): string {
   // JSON encoding gives an unambiguous joining of the fields for free: no
   // separator character can be confused with field content, so ("ab","c") and
@@ -25,8 +66,14 @@ export function cacheKeyFor(req: SynthRequest): string {
     req.provider,
     req.voice,
     req.model,
+    VOICE_SETTINGS_VERSION,
     req.speed.toFixed(2),
     normalizeForKey(req.text),
+    // Prior context changes the delivery, so it changes the audio and must be
+    // part of the key. The fixed phrase set is unaffected: fillers are always
+    // the first thing said in a stream, so their previousText is empty and
+    // their warmed cache entries still hit.
+    normalizeForKey(trimPreviousText(req.previousText)),
   ]);
   return fnv1a64(canonical);
 }
@@ -109,6 +156,18 @@ export const THINKING_PHRASES: readonly string[] = [
 ];
 
 /**
+ * Last resort when the user asked a direct question and the model still chose
+ * to say nothing. The thinking filler has already played by then, so silence
+ * reads as the coach ignoring them — these keep the exchange closed. Kept
+ * deliberately vague: we're recovering precisely because we have no answer.
+ */
+export const NO_ANSWER_PHRASES: readonly string[] = [
+  "Nothing new from me — you're good to keep going.",
+  "You're on track — carry on with that last step.",
+  "Still looks right to me — keep going.",
+];
+
+/**
  * Everything worth pre-synthesizing at startup, so the first filler of a
  * session plays instantly instead of paying full synthesis cost at the worst
  * possible moment.
@@ -117,6 +176,7 @@ export const WARMABLE_PHRASES: readonly string[] = [
   ...THINKING_PHRASES,
   ...COMPLETION_PHRASES,
   ...WAITING_PHRASES,
+  ...NO_ANSWER_PHRASES,
 ];
 
 /**

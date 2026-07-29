@@ -293,6 +293,18 @@ export default function App() {
     }
   }, []);
 
+  // Autosave after every turn. History used to be written once, at the end, so
+  // a renderer crash mid-session left no record of it at all — the session that
+  // crashed on 7/29 lost 6 turns of transcript. Same session id, so this
+  // overwrites in place instead of accumulating rows, and the save on stop/quit
+  // still has the last word (it carries the verdict and the real outcome).
+  const conversationLength = conversation.length;
+  useEffect(() => {
+    if (conversationLength === 0) return;
+    if (!useSession.getState().sessionId) return;
+    void persistSession(null);
+  }, [conversationLength, persistSession]);
+
   function stop() {
     cancelTts();
     void persistSession(evalResult?.verdict ?? null);

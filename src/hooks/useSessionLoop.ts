@@ -4,10 +4,12 @@ import { useSettings } from "../store/settings";
 import { api } from "../lib/api";
 import { hashFrame, hashDistance, hashesAreSimilar } from "../lib/frameHash";
 import { shouldCallClaude, type TickReason } from "../lib/loopGate";
+import { instructionsAreSimilar, isRepeatedSentence } from "../lib/repeatGuard";
 import { budgetStatus, cacheHitRate, formatUsd } from "../../electron/usage";
 import {
   openSpeechStream,
   randomCompletionPhrase,
+  randomNoAnswerPhrase,
   randomThinkingPhrase,
   waitForSpeechEnd,
   isSpeaking,
@@ -96,19 +98,6 @@ function getModeConfig(mode: AppMode | null): ModeConfig {
         requireScreenChange: true,
       };
   }
-}
-
-function instructionsAreSimilar(a: string, b: string): boolean {
-  const norm = (s: string) =>
-    s
-      .toLowerCase()
-      .replace(/[^a-z0-9 ]+/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-  const na = norm(a);
-  const nb = norm(b);
-  if (!na || !nb) return false;
-  return na === nb;
 }
 
 export function useSessionLoop(onNeedsApiKey: () => void) {
@@ -266,6 +255,11 @@ export function useSessionLoop(onNeedsApiKey: () => void) {
         if (s.pendingFollowUp) {
           useSession.getState().setPendingFollowUp(null);
         }
+        // The user asked something this turn. The two anti-repetition guards
+        // below are about not talking unprompted, and neither applies once
+        // they've prompted us: saying an answer again because they asked for it
+        // is correct, and going quiet leaves their question hanging.
+        const answeringFollowUp = Boolean(followUp);
 
         // The user asked a direct question and is now waiting on a multi-second
         // vision call. A short spoken filler ("Let me take a look.") bridges the
@@ -279,12 +273,28 @@ export function useSessionLoop(onNeedsApiKey: () => void) {
         // soon as the first sentence of the instruction exists in the Claude
         // stream (never for "wait"), so speech starts while Claude is still
         // writing the rest.
+        //
+        // Repeat suppression has to happen HERE rather than on the finished
+        // response: by the time the full result arrives every sentence has
+        // already been enqueued and the user has heard it. Chunks are judged
+        // one at a time, so a turn that pairs a new sentence with a repeated
+        // one still speaks the new half.
         let earlySpoken = false;
+        let suppressedRepeat = false;
+        const previousInstruction = s.lastSpokenInstruction ?? "";
         unsubEarly = api().claude.onSpeechChunk((chunk) => {
           if (!ttsOn()) return;
           // While the user is off on a digression, stay quiet — the full
           // response handler below decides if there's something new to say.
           if (useSession.getState().diverted) return;
+          if (
+            !answeringFollowUp &&
+            isRepeatedSentence(chunk.text, previousInstruction)
+          ) {
+            log(`repeat sentence suppressed: "${chunk.text.slice(0, 40)}"`);
+            suppressedRepeat = true;
+            return;
+          }
           speakOut(chunk.text);
           earlySpoken = true;
           useSession.getState().setLastSpokeAt(Date.now());
@@ -444,6 +454,7 @@ export function useSessionLoop(onNeedsApiKey: () => void) {
         // call spacing are already stamped, so this can never wedge the loop.
         let action = result.action;
         if (
+          !answeringFollowUp &&
           action === "instruct" &&
           result.instruction &&
           instructionsAreSimilar(
@@ -453,6 +464,22 @@ export function useSessionLoop(onNeedsApiKey: () => void) {
         ) {
           log("repeated instruction suppressed; treating as wait");
           action = "wait";
+        }
+
+        // A follow-up that resolves to "wait" is the one silence the user
+        // always notices — they hear "Let me take a look." and then nothing.
+        // The prompt forbids it, so this is the belt-and-braces path: say
+        // whatever the model did produce, or a fixed phrase if it produced
+        // nothing at all.
+        let noAnswerFallback: string | null = null;
+        if (answeringFollowUp && action === "wait") {
+          noAnswerFallback = result.instruction?.trim()
+            ? null
+            : randomNoAnswerPhrase();
+          log(
+            `follow-up returned wait — recovering with ${noAnswerFallback ? "a fixed phrase" : "the model's text"}`,
+          );
+          action = "acknowledge";
         }
 
         switch (action) {
@@ -472,7 +499,9 @@ export function useSessionLoop(onNeedsApiKey: () => void) {
             useSession
               .getState()
               .setLastExpectedResult(result.expectedResult || null);
-            if (!earlySpoken) speakOut(result.instruction);
+            // `suppressedRepeat` means we deliberately withheld sentences as
+            // they streamed — re-speaking the full text here would undo that.
+            if (!earlySpoken && !suppressedRepeat) speakOut(result.instruction);
             // Point at the thing to click: flash a glow box on the screen
             // over the element Claude identified.
             if (result.highlight) {
@@ -483,16 +512,17 @@ export function useSessionLoop(onNeedsApiKey: () => void) {
 
           case "acknowledge":
           case "check_in": {
+            const text = noAnswerFallback ?? result.instruction;
             useSession.getState().appendTurn({
               role: "assistant",
-              content: result.instruction,
+              content: text,
               timestamp: Date.now(),
             });
             useSession.getState().setLastSpokeAt(Date.now());
             if (action === "check_in") {
               useSession.getState().setLastCheckInAt(Date.now());
             }
-            if (!earlySpoken) speakOut(result.instruction);
+            if (!earlySpoken && !suppressedRepeat) speakOut(text);
             break;
           }
 
@@ -508,8 +538,11 @@ export function useSessionLoop(onNeedsApiKey: () => void) {
             useSession.getState().setDone(true);
             // If the instruction already streamed out, just add the wrap-up —
             // it queues behind the still-playing sentences.
-            if (earlySpoken) speakOut(randomCompletionPhrase());
-            else speakOut(`${result.instruction} ${randomCompletionPhrase()}`);
+            if (earlySpoken || suppressedRepeat) {
+              speakOut(randomCompletionPhrase());
+            } else {
+              speakOut(`${result.instruction} ${randomCompletionPhrase()}`);
+            }
             break;
           }
         }

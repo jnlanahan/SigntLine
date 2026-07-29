@@ -88,7 +88,11 @@ function providerOrder(): SpokenEngine[] {
   return [preferred, ...all.filter((p) => p !== preferred)];
 }
 
-function requestFor(text: string, provider: SpokenEngine): SynthRequest {
+function requestFor(
+  text: string,
+  provider: SpokenEngine,
+  previousText = "",
+): SynthRequest {
   const s = loadSettings();
   return {
     text,
@@ -96,12 +100,14 @@ function requestFor(text: string, provider: SpokenEngine): SynthRequest {
     voice: provider === "elevenlabs" ? s.elevenVoiceId : s.ttsVoice,
     model: provider === "elevenlabs" ? ELEVEN_MODEL : provider,
     speed: s.ttsSpeed,
+    previousText,
   };
 }
 
 async function synthesize(
   text: string,
   provider: SpokenEngine,
+  previousText = "",
 ): Promise<Buffer> {
   const s = loadSettings();
   switch (provider) {
@@ -109,6 +115,7 @@ async function synthesize(
       return speakTextElevenLabs(text, {
         voiceId: s.elevenVoiceId,
         speed: s.ttsSpeed,
+        previousText,
       });
     case "google":
       return speakTextGoogle(text, s.ttsVoice);
@@ -121,7 +128,10 @@ async function synthesize(
  * Speak one chunk of text. Returns base64 MP3 plus which engine produced it,
  * or an error envelope when every provider is unavailable or failing.
  */
-export async function speak(text: string): Promise<SpeakResult | SpeakFailure> {
+export async function speak(
+  text: string,
+  previousText = "",
+): Promise<SpeakResult | SpeakFailure> {
   const startedAt = Date.now();
   // Single preprocessing point for every path into synthesis — this is what
   // makes the startup warmer's cache keys match the live session's.
@@ -138,7 +148,7 @@ export async function speak(text: string): Promise<SpeakResult | SpeakFailure> {
     if (!(await providerAvailable(provider))) continue;
     anyAvailable = true;
 
-    const req = requestFor(trimmed, provider);
+    const req = requestFor(trimmed, provider, previousText);
     const hit = readCached(req);
     if (hit) {
       return {
@@ -151,7 +161,7 @@ export async function speak(text: string): Promise<SpeakResult | SpeakFailure> {
 
     try {
       const audio = await withTimeout(
-        synthesize(trimmed, provider),
+        synthesize(trimmed, provider, previousText),
         TIMEOUT_MS[provider],
         `${provider}_tts_timeout`,
       );

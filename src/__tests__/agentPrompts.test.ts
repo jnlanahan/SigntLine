@@ -1,13 +1,28 @@
 import { describe, expect, it } from "vitest";
-import { techSupportSystemPrompt } from "../../electron/agents/tech-support";
-import { trainingSystemPrompt } from "../../electron/agents/training";
-import { teacherSystemPrompt } from "../../electron/agents/teacher";
+import {
+  techSupportSystemPrompt,
+  TECH_SUPPORT_FOLLOW_UP_GUIDANCE,
+} from "../../electron/agents/tech-support";
+import {
+  trainingSystemPrompt,
+  TRAINING_FOLLOW_UP_GUIDANCE,
+} from "../../electron/agents/training";
+import {
+  teacherSystemPrompt,
+  TEACHER_FOLLOW_UP_GUIDANCE,
+} from "../../electron/agents/teacher";
 import { parseInstruction } from "../../electron/instruction-parse";
 
 const PROMPTS: Array<[string, string]> = [
   ["tech support", techSupportSystemPrompt()],
   ["training", trainingSystemPrompt()],
   ["teacher", teacherSystemPrompt()],
+];
+
+const FOLLOW_UP_GUIDANCE: Array<[string, string]> = [
+  ["tech support", TECH_SUPPORT_FOLLOW_UP_GUIDANCE],
+  ["training", TRAINING_FOLLOW_UP_GUIDANCE],
+  ["teacher", TEACHER_FOLLOW_UP_GUIDANCE],
 ];
 
 describe("every agent can choose to stay silent", () => {
@@ -25,6 +40,27 @@ describe("every agent can choose to stay silent", () => {
 
   it.each(PROMPTS)("%s requires an empty instruction on a silent turn", (_name, prompt) => {
     expect(prompt.toLowerCase()).toContain("empty string when action is \"wait\"");
+  });
+});
+
+describe("a direct question is never answered with silence", () => {
+  // The bug this locks: the user typed "Done — what's next?", the coach played
+  // its thinking filler ("Let me take a look."), and the model then returned
+  // action=wait with an empty instruction. The user heard the filler and then
+  // nothing at all. Silence is a valid answer to a still screen; it is never a
+  // valid answer to a question.
+  it.each(FOLLOW_UP_GUIDANCE)("%s forbids wait on a follow-up turn", (_name, guidance) => {
+    expect(guidance).toContain('never "wait"');
+  });
+
+  it.each(FOLLOW_UP_GUIDANCE)("%s names the actions it may use instead", (_name, guidance) => {
+    expect(guidance).toContain('"instruct"');
+    expect(guidance).toContain('"acknowledge"');
+    expect(guidance).toContain('"done"');
+  });
+
+  it.each(FOLLOW_UP_GUIDANCE)("%s points at this turn's follow-up", (_name, guidance) => {
+    expect(guidance.toLowerCase()).toContain("follow-up");
   });
 });
 

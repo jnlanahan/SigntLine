@@ -391,10 +391,16 @@ function broadcastGlowMode() {
 }
 
 function showGlowOverlay(displayId: string | null) {
+  // destroy(), not close(): close() is asynchronous, so the old overlay was
+  // still alive while the new one was created. Its 'closed' handler then fired
+  // LATER and unconditionally nulled `glowWindow` — which by then pointed at
+  // the NEW overlay. The next call saw null, skipped the teardown, and created
+  // another window, leaving the previous one stranded on the old monitor.
+  // That's the green box that stayed behind when switching screens.
   if (glowWindow && !glowWindow.isDestroyed()) {
-    glowWindow.close();
-    glowWindow = null;
+    glowWindow.destroy();
   }
+  glowWindow = null;
   glowAdjusting = false;
 
   const target = getGlowDisplay(displayId);
@@ -439,7 +445,13 @@ function showGlowOverlay(displayId: string | null) {
     `data:text/html;charset=utf-8,${encodeURIComponent(buildGlowHtml(currentGlowAccent()))}`,
   );
 
-  glowWindow.on("closed", () => { glowWindow = null; });
+  // Only clear the shared reference if it still points at THIS window. Without
+  // the identity check, a late 'closed' event from a superseded overlay wipes
+  // the pointer to the current one and strands it on screen.
+  const thisWindow = glowWindow;
+  glowWindow.on("closed", () => {
+    if (glowWindow === thisWindow) glowWindow = null;
+  });
 }
 
 // The display id the glow should sit on = the display of the screen that is
@@ -485,9 +497,9 @@ async function dockToWatchedDisplay(): Promise<boolean> {
 
 function hideGlowOverlay() {
   if (glowWindow && !glowWindow.isDestroyed()) {
-    glowWindow.close();
-    glowWindow = null;
+    glowWindow.destroy();
   }
+  glowWindow = null;
   glowAdjusting = false;
 }
 

@@ -71,6 +71,37 @@ describe("timing constants (regression guards)", () => {
   });
 });
 
+describe("the coach never talks over itself or ignores the user", () => {
+  // Repeats have to be caught in the chunk handler. The post-response dedupe
+  // still exists as a backstop, but by the time it runs every sentence has
+  // already been enqueued for playback — suppressing there is too late to
+  // stop the user hearing it.
+  it("repeat suppression runs on streamed chunks, not just the final result", async () => {
+    const src = await loopSource();
+    expect(src).toContain("isRepeatedSentence(chunk.text, previousInstruction)");
+  });
+
+  it("withheld chunks are not re-spoken by the end-of-response fallback", async () => {
+    const src = await loopSource();
+    expect(src).toContain("if (!earlySpoken && !suppressedRepeat)");
+  });
+
+  // A follow-up is an explicit question. Neither anti-repetition guard may
+  // apply to it: saying an answer again because the user asked is correct,
+  // and a silent turn leaves them hanging after the filler already played.
+  it("a follow-up turn is exempt from repeat suppression", async () => {
+    const src = await loopSource();
+    expect(src).toContain("const answeringFollowUp = Boolean(followUp);");
+    expect(src).toContain("!answeringFollowUp &&");
+  });
+
+  it("a follow-up that returns wait is recovered into something spoken", async () => {
+    const src = await loopSource();
+    expect(src).toContain('if (answeringFollowUp && action === "wait")');
+    expect(src).toContain("randomNoAnswerPhrase()");
+  });
+});
+
 describe("vision payload size (regression guards)", () => {
   // Each attached frame is ~1.2k tokens of prefill and lands directly on
   // time-to-first-token. Reduced from 3 to 2 in July 2026; raising it again

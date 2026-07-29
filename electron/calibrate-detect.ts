@@ -8,6 +8,14 @@
 // showing a solid magenta marker window on one display at a time and finding
 // which capture source actually contains it.
 
+// The colour painted on screen during calibration. It lives here, beside the
+// thresholds it must satisfy, so the two can never drift apart — and so the
+// renderer test suite can check it without importing Electron.
+//
+// Pure #f0f reads as a graphics driver failure on a full screen, which is
+// alarming; this is the softest magenta that still clears markerRatio().
+export const MARKER_COLOR = "#c860c8";
+
 export interface BitmapLike {
   // Raw pixel data, 4 bytes per pixel. Electron's nativeImage.toBitmap()
   // returns BGRA on Windows. Magenta is deliberately symmetric in R and B, so

@@ -53,6 +53,10 @@ export const TRAINING_NEXT_TURN_PROMPT = `Look at the latest screenshot. If a st
 
 export const TRAINING_STALLED_GUIDANCE = `The screen has been still for a while. If they've finished a section, ask whether to move on; if they've stopped mid-workflow, ask whether they want to pick it up later. Keep it to one short question.`;
 
+// "wait" is this mode's default, which makes it the mode most likely to answer
+// a direct question with silence.
+export const TRAINING_FOLLOW_UP_GUIDANCE = `The user just asked you something directly (see the follow-up in this turn's message). Answer it now — action must be "instruct", "acknowledge", or "done", never "wait", even though wait is your normal answer while observing. Keep it short and stay in your role: answer about the plan you're building, don't start telling them how to do the task.`;
+
 export const TRAINING_SESSION_START_GUIDANCE = `The session just started. Ask your first scoping question now (action=instruct): who this training is for, or what a trainee should be able to do at the end. Do not choose wait, and do not set digression on this turn.`;
 
 export const TRAINING_CLARIFICATION_PROMPT = `You are helping scope a training plan. Given what the user wants to document, generate exactly 2-3 short, specific questions that pin down who the training is for, what process it covers, and how much detail it needs. For each question, provide 3-4 answer options: the first 2 should be the most common/recommended answers, the rest are reasonable alternatives. Output JSON only:

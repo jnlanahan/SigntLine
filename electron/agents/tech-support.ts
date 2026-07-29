@@ -89,6 +89,11 @@ export const TECH_SUPPORT_NEXT_TURN_PROMPT = `Look at the latest screenshot, dec
 // screen has been still longer than the current step should take.
 export const TECH_SUPPORT_STALLED_GUIDANCE = `The screen has been still for a while. FIRST compare the latest screenshot against your previous instruction: if the user already completed that step, give the NEXT step now (action=instruct) — don't make them wait or ask. If they genuinely haven't acted yet, they may be working slowly, reading, or stuck: choose check_in if you haven't spoken recently, otherwise wait. If the screen looks unrelated to the goal or looks frozen, ask which screen or monitor they're working on — the watched screen may be the wrong one; they can switch it from the screen picker.`;
 
+// Appended whenever the user asked something this turn. A follow-up that
+// resolves to "wait" is the one silence the user always notices: they hear the
+// thinking filler, then nothing at all.
+export const TECH_SUPPORT_FOLLOW_UP_GUIDANCE = `The user just asked you something directly (see the follow-up in this turn's message). Answer it now — action must be "instruct", "acknowledge", or "done", never "wait". Even if the screen hasn't changed and you have no new step to give, reply to what they asked; if their question means the current step no longer applies, say so and give the step that does. Answer the question they actually asked, not the one the screen suggests.`;
+
 // Appended on the very first look after the session starts.
 export const TECH_SUPPORT_SESSION_START_GUIDANCE = `The session just started — this is your first look at the screen. Give the FIRST concrete step toward the goal now (action=instruct). Do not choose wait, and do not set digression=true on this turn: if what's visible looks unrelated to the goal, the first step is getting the user there — or ask which screen or monitor they're working on.`;
 

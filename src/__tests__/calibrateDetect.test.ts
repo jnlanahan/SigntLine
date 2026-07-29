@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  MARKER_COLOR,
   markerRatio,
   pickMarkerSource,
   MIN_MARKER_RATIO,
@@ -110,5 +111,49 @@ describe("pickMarkerSource", () => {
   it("single source is confident when above floor", () => {
     const pick = pickMarkerSource([{ id: "only", ratio: 0.95 }]);
     expect(pick?.confident).toBe(true);
+  });
+});
+
+describe("the on-screen marker colour", () => {
+  // The marker is a near-full-screen flash on every monitor, so it is the most
+  // visible thing this app ever does. It was pure #f0f, which reads as a
+  // graphics driver failure; it is now a softer magenta with a label. That
+  // only works while the colour still clears the detector's thresholds — if
+  // this test fails, calibration would silently stop identifying screens and
+  // the app would go back to capturing the wrong monitor.
+  function solidBitmap(hex: string, width = 40, height = 30) {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    const data = new Uint8Array(width * height * 4);
+    for (let i = 0; i < width * height; i++) {
+      // Electron's toBitmap() is BGRA on Windows.
+      data[i * 4] = b;
+      data[i * 4 + 1] = g;
+      data[i * 4 + 2] = r;
+      data[i * 4 + 3] = 255;
+    }
+    return { data, width, height };
+  }
+
+  it("is detected as the marker", () => {
+    expect(markerRatio(solidBitmap(MARKER_COLOR))).toBeGreaterThan(0.99);
+  });
+
+  it("clears the confidence threshold against a blank screen", () => {
+    const pick = pickMarkerSource([
+      { id: "marked", ratio: markerRatio(solidBitmap(MARKER_COLOR)) },
+      { id: "blank", ratio: markerRatio(solidBitmap("#202020")) },
+    ]);
+    expect(pick?.id).toBe("marked");
+    expect(pick?.confident).toBe(true);
+  });
+
+  it("keeps headroom above the minimum ratio", () => {
+    // Thumbnail scaling and Night Light shift colours; a marker that only just
+    // passes on a synthetic bitmap would fail on a real screen.
+    expect(markerRatio(solidBitmap(MARKER_COLOR))).toBeGreaterThan(
+      MIN_MARKER_RATIO * 2,
+    );
   });
 });

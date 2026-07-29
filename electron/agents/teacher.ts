@@ -57,6 +57,8 @@ export const TEACHER_NEXT_TURN_PROMPT = `Respond to the user's message. Teach th
 
 export const TEACHER_STALLED_GUIDANCE = `They've been quiet for a while. They may be reading or thinking — that's fine. Only check in if you haven't spoken recently, and keep it to one light question.`;
 
+export const TEACHER_FOLLOW_UP_GUIDANCE = `The learner just asked you something directly (see the follow-up in this turn's message). Answer it now — action must be "instruct", "acknowledge", or "done", never "wait". This mode only speaks when they do, so a silent turn here leaves their question hanging.`;
+
 export const TEACHER_SESSION_START_GUIDANCE = `The session just started. Open now (action=instruct): find out what they already know about this subject and what they want to be able to do by the end. Do not choose wait, and do not set digression on this turn.`;
 
 export const TEACHER_CLARIFICATION_PROMPT = `You are helping a learner set up a study session. Given the subject they want to learn, generate exactly 2-3 short, specific questions that pin down their current level, what they want to get out of it, and how they prefer to learn. For each question, provide 3-4 answer options: the first 2 should be the most common/recommended answers, the rest are reasonable alternatives. Output JSON only:
