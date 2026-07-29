@@ -1,12 +1,22 @@
 import { create } from "zustand";
+import { EMPTY_USAGE, addUsage } from "../../electron/usage";
 import type {
   AppMode,
   CaptureFrame,
   ConversationTurn,
   SessionStatus,
   StepPace,
+  TtsPlaybackEngine,
+  TokenUsage,
   UploadedContext,
 } from "../lib/api";
+
+/**
+ * Why the session is paused. "user" is a deliberate pause, "idle" is the loop
+ * standing down, "budget" means the spend cap stopped it — the UI needs to
+ * tell these apart because only one of them is the user's own doing.
+ */
+export type PauseReason = "user" | "idle" | "budget" | null;
 
 export interface SessionState {
   status: SessionStatus;
@@ -30,7 +40,7 @@ export interface SessionState {
   agentNotes: string[];
   lastProcessedHash: string | null;
   pendingFollowUp: string | null;
-  pauseReason: "user" | "idle" | null;
+  pauseReason: PauseReason;
   researchQuery: string | null;
 
   // Used to avoid speaking / re-rendering the same instruction back-to-back.
@@ -53,7 +63,30 @@ export interface SessionState {
   lastExpectedResult: string | null;
   // Which TTS engine actually spoke last — lets the UI surface degradation
   // to the system voice instead of failing silently.
-  lastTtsEngine: "google" | "openai" | "system" | "none" | null;
+  lastTtsEngine: TtsPlaybackEngine | null;
+  // The user is holding push-to-talk (or the mic button) and speaking. While
+  // true the loop must not tick and the coach must not speak — talking over
+  // someone who is mid-sentence is the single rudest thing this app can do.
+  listening: boolean;
+  // Their speech is being transcribed. Distinct from "listening" so the UI can
+  // show progress after they release the key.
+  transcribing: boolean;
+  // Live partial/last transcript, shown while the user talks so they can see
+  // they were heard.
+  lastTranscript: string | null;
+  // Running token and dollar total for this session, so the cost of watching
+  // someone's screen is visible rather than a surprise at the end of a month.
+  usage: TokenUsage;
+  costUsd: number;
+  // Number of Claude calls this session — the denominator for "cost per call"
+  // and a cheap sanity check on loop behaviour in the logs.
+  claudeCalls: number;
+  // Stable id for this session, minted at start so history and any memory
+  // learned mid-session can be attributed before the session ends.
+  sessionId: string | null;
+  // Facts recalled from earlier sessions, formatted for the prompt. Resolved
+  // once at session start so the prompt prefix stays byte-stable across ticks.
+  recalledMemory: string;
 
   setStatus(s: SessionStatus): void;
   setMode(mode: AppMode | null): void;
@@ -72,7 +105,7 @@ export interface SessionState {
   appendAgentNote(note: string): void;
   setLastProcessedHash(h: string | null): void;
   setPendingFollowUp(text: string | null): void;
-  setPauseReason(r: "user" | "idle" | null): void;
+  setPauseReason(r: PauseReason): void;
   setResearchQuery(q: string | null): void;
   setLastSpokenInstruction(s: string | null): void;
   setLastSpokeAt(t: number | null): void;
@@ -82,7 +115,13 @@ export interface SessionState {
   setCurrentPace(p: StepPace): void;
   setTroubleshooting(v: boolean): void;
   setLastExpectedResult(s: string | null): void;
-  setLastTtsEngine(e: "google" | "openai" | "system" | "none" | null): void;
+  setLastTtsEngine(e: TtsPlaybackEngine | null): void;
+  setListening(v: boolean): void;
+  setTranscribing(v: boolean): void;
+  setLastTranscript(t: string | null): void;
+  recordUsage(usage: TokenUsage, costUsd: number): void;
+  setSessionId(id: string | null): void;
+  setRecalledMemory(text: string): void;
   reset(): void;
 }
 
@@ -107,7 +146,7 @@ const initial = {
   agentNotes: [] as string[],
   lastProcessedHash: null as string | null,
   pendingFollowUp: null as string | null,
-  pauseReason: null as "user" | "idle" | null,
+  pauseReason: null as PauseReason,
   researchQuery: null as string | null,
   lastSpokenInstruction: null as string | null,
   lastSpokeAt: null as number | null,
@@ -117,7 +156,15 @@ const initial = {
   currentPace: "medium" as StepPace,
   troubleshooting: false,
   lastExpectedResult: null as string | null,
-  lastTtsEngine: null as "google" | "openai" | "system" | "none" | null,
+  lastTtsEngine: null as TtsPlaybackEngine | null,
+  listening: false,
+  transcribing: false,
+  lastTranscript: null as string | null,
+  usage: { ...EMPTY_USAGE },
+  costUsd: 0,
+  claudeCalls: 0,
+  sessionId: null as string | null,
+  recalledMemory: "",
 };
 
 export const useSession = create<SessionState>((set) => ({
@@ -173,5 +220,16 @@ export const useSession = create<SessionState>((set) => ({
   setTroubleshooting: (v) => set({ troubleshooting: v }),
   setLastExpectedResult: (s) => set({ lastExpectedResult: s }),
   setLastTtsEngine: (e) => set({ lastTtsEngine: e }),
+  setListening: (v) => set({ listening: v }),
+  setTranscribing: (v) => set({ transcribing: v }),
+  setLastTranscript: (t) => set({ lastTranscript: t }),
+  setSessionId: (id) => set({ sessionId: id }),
+  setRecalledMemory: (text) => set({ recalledMemory: text }),
+  recordUsage: (usage, costUsd) =>
+    set((state) => ({
+      usage: addUsage(state.usage, usage),
+      costUsd: state.costUsd + costUsd,
+      claudeCalls: state.claudeCalls + 1,
+    })),
   reset: () => set({ ...initial }),
 }));

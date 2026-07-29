@@ -1,4 +1,13 @@
+import type { TokenUsage } from "./usage";
+import type { MemoryKind } from "./db/schema";
+
 export type AppMode = "tech_support" | "training" | "teacher";
+
+/** A durable fact the agent asked to remember beyond this session. */
+export interface RememberedFact {
+  kind: MemoryKind;
+  content: string;
+}
 
 export type SessionStatus =
   | "idle"
@@ -80,6 +89,14 @@ export interface InstructionResponse {
   researchQuery: string;
   notes: string;
   highlight: HighlightRect | null;
+  // A fact worth carrying into FUTURE sessions, distinct from "notes" (which
+  // is a scratchpad for this session only). Null on most turns.
+  remember: RememberedFact | null;
+  // Token accounting for this call. Attached by claude.ts after parsing (the
+  // parser itself stays pure); absent when the call never reached the API.
+  usage?: TokenUsage;
+  model?: string;
+  costUsd?: number;
 }
 
 export interface UploadedContext {
@@ -121,6 +138,19 @@ export type TtsVoiceId =
   | "coral"
   | "sage";
 
+// Which speech provider to try first. "auto" uses the quality/latency order
+// (ElevenLabs → Google → OpenAI); an explicit choice pins the first provider
+// but never removes the fallbacks behind it.
+export type TtsProviderChoice = "auto" | "elevenlabs" | "google" | "openai";
+
+// One selectable ElevenLabs voice, as shown in Settings. Fetched live from the
+// account when a key is present, with a curated preset list as the fallback.
+export interface ElevenVoiceOption {
+  id: string;
+  name: string;
+  blurb: string;
+}
+
 export type AccentName = "lime" | "cobalt" | "rose" | "slate";
 
 // Side of the monitor the docked sidebar reserves (Windows AppBar).
@@ -160,6 +190,25 @@ export interface Settings {
   hasSeenPrivacyNotice: boolean;
   ttsEnabled: boolean;
   ttsVoice: TtsVoiceId;
+  // Preferred speech provider; fallbacks always remain behind it.
+  ttsProvider: TtsProviderChoice;
+  // ElevenLabs voice id (separate from ttsVoice, which addresses the
+  // Google/OpenAI voice sets — the two vendors share no voice namespace).
+  elevenVoiceId: string;
+  // Speaking rate, 0.7–1.2. Applied by providers that support it.
+  ttsSpeed: number;
+  // Hold-to-talk: press and hold this key to interrupt the coach and speak.
+  // Stored as a uiohook key name (see electron/hotkey.ts).
+  pushToTalkKey: PushToTalkKey;
+  // Whether holding the push-to-talk key cuts off in-progress speech.
+  bargeInEnabled: boolean;
+  // Soft budget for a single session, in USD. The coach warns as it nears the
+  // cap and stops making paid calls at it. 0 disables the cap.
+  sessionBudgetUsd: number;
+  // Persist finished sessions (transcript, steps, outcome) to local history.
+  historyEnabled: boolean;
+  // Let the coach recall durable facts from earlier sessions.
+  memoryEnabled: boolean;
   accentColor: AccentName;
   windowBounds: WindowBounds | null;
   solidBackground: boolean;
@@ -203,10 +252,21 @@ export interface ApiKeyStatus {
   anthropic: boolean;
   openai: boolean;
   google: boolean;
+  elevenlabs: boolean;
 }
 
 // Which engine actually produced the audio for a tts:speak call.
-export type TtsEngine = "google" | "openai";
+export type TtsEngine = "elevenlabs" | "google" | "openai";
+
+// What actually spoke, including the two non-cloud outcomes: the browser's
+// built-in voice, and nothing at all. Surfaced in the UI so a silent
+// degradation to the robotic system voice is visible rather than mysterious.
+export type TtsPlaybackEngine = TtsEngine | "system" | "none";
+
+// Keys offered for hold-to-talk. Deliberately a short list of keys that are
+// unlikely to collide with what the user is typing in the app they're being
+// coached through.
+export type PushToTalkKey = "ctrl" | "alt" | "f8" | "f9" | "none";
 
 export type IpcChannel =
   | "settings:get"
@@ -240,4 +300,15 @@ export type IpcChannel =
   | "claude:evaluate-goal"
   | "dock:set"
   | "dock:resize"
-  | "dock:state";
+  | "dock:state"
+  | "tts:list-voices"
+  | "voice:ptt"
+  | "history:list"
+  | "history:get"
+  | "history:save"
+  | "history:delete"
+  | "memory:list"
+  | "memory:forget"
+  | "plans:list"
+  | "plans:save"
+  | "plans:delete";

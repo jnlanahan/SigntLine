@@ -10,8 +10,10 @@ import type {
   SessionPlan,
 } from "./types";
 import { getKey } from "./credentials";
+import { toContextResolution } from "./capture";
 import { InstructionChunker, type SpeechChunk } from "./speech-chunker";
 import { extractJson, parseInstruction } from "./instruction-parse";
+import { estimateCostUsd, normalizeUsage } from "./usage";
 import { PLAN_RESEARCH_RULE, SHARED_FIELD_RULES, VOICE_RULES } from "./agents/shared";
 import {
   techSupportSystemPrompt,
@@ -21,54 +23,46 @@ import {
   TECH_SUPPORT_SESSION_START_GUIDANCE,
   TECH_SUPPORT_STALLED_GUIDANCE,
 } from "./agents/tech-support";
+import {
+  trainingSystemPrompt,
+  TRAINING_CLARIFICATION_PROMPT,
+  TRAINING_NEXT_TURN_PROMPT,
+  TRAINING_PLAN_PROMPT,
+  TRAINING_SESSION_START_GUIDANCE,
+  TRAINING_STALLED_GUIDANCE,
+} from "./agents/training";
+import {
+  teacherSystemPrompt,
+  TEACHER_CLARIFICATION_PROMPT,
+  TEACHER_NEXT_TURN_PROMPT,
+  TEACHER_PLAN_PROMPT,
+  TEACHER_SESSION_START_GUIDANCE,
+  TEACHER_STALLED_GUIDANCE,
+} from "./agents/teacher";
 
 const MODEL = "claude-sonnet-4-6";
 const MAX_TOKENS = 800;
-// 3 frames ≈ 25s of visual history at normal pacing; each extra frame adds
-// ~1.3k tokens of prefill (≈ slower time-to-first-token on every tick).
-const MAX_FRAMES = 3;
+// Previous frame + latest frame. Each frame costs ~1.2k tokens of prefill,
+// which lands directly on time-to-first-token — i.e. on how long the user
+// waits to hear anything. A third frame was measurably slower and added
+// little: "what changed" is already answered by the before/after pair, and
+// everything older is better carried by completed_steps, the agent's notes,
+// and the explicit "screen last changed Ns ago" timing line.
+const MAX_FRAMES = 2;
 
-// Per-mode role intros for the modes that still live here. The tech support
-// agent has grown its own skill set and lives in ./agents/tech-support.ts.
-const TRAINING_INTRO = `You are a silent observer and collaborative training-plan builder. Your job is to help the user document a workflow they already know — by watching them demonstrate it on screen — and turn it into a clear, step-by-step training plan.
-
-Phase 1 – Scoping (first 1-2 turns only): Ask a maximum of 2 targeted questions before they start demonstrating: who is this training for, and what outcome should trainees reach? Keep it brief.
-
-Phase 2 – Silent observation: Once they begin demonstrating, go quiet. Watch the screenshots. Do NOT interrupt mid-step. Only speak when a clear change on screen signals a step is complete — then confirm it as a plan item and ask what comes next.
-
-Rules:
-- Never tell the user HOW to do something — you are documenting what THEY already do.
-- Speak only to confirm a completed step, ask a scoping question, or check if the plan section is done.
-- Each completed step should be a short action-verb phrase (e.g., "Open the admin panel", "Select the user role").
-- "completed_steps" is the training plan assembled so far — each entry is one confirmed plan step in order.
-- "done" is true only when the user confirms the full plan is complete; give a short wrap-up summarizing it.`;
-
-const TEACHER_INTRO = `You are an engaging, Socratic tutor. You guide the user through deep learning of a subject — not by lecturing, but through dialogue: questions, explanations, and recommended resources.
-
-How each session works:
-- Start by asking what they already know and exactly what they want to master.
-- Teach one concept at a time, then ask a question to check understanding before moving on.
-- When relevant, recommend specific resources — videos, articles, docs — by setting needsResearch=true with a precise search query so the app can look them up.
-- If the user has a source open on screen, reference what's actually visible in your explanation.
-
-Rules:
-- This is a CONVERSATION, not a step-by-step walkthrough. Respond to what the user says, not just what the screen shows.
-- Only respond when the user sends a message — never interrupt their reading with unprompted observations.
-- Socratic questioning is your main tool: "What do you think would happen if…?" "How does this relate to what you just saw?"
-- "completed_steps" is the running list of topics or concepts covered so far.
-- "done" is true only when the user says they've learned what they came to learn.`;
-
-const OUTPUT_RULES = `Output rules:
-- Respond with a JSON object only, no prose around it, no code fences.
-- Schema: {"instruction": string, "completed_steps": string[], "upcoming_steps": string[], "digression": boolean, "done": boolean, "needsResearch": boolean, "researchQuery": string, "notes": string}
-- "instruction" is your next message to the user — conversational tone, under 60 words.
-- "done" follows the mode rules above; write a short, punchy wrap-up when done and give no further steps.
-${SHARED_FIELD_RULES}`;
-
+// Every mode now has its own agent module, and every mode declares an
+// "action" each turn. That last part matters: a mode without one has no way
+// to stay silent, so a turn it intended as "say nothing" parsed as "speak"
+// and fell back to reading the raw JSON aloud.
 function systemPromptFor(mode: AppMode): string {
-  if (mode === "tech_support") return techSupportSystemPrompt();
-  const intro = mode === "training" ? TRAINING_INTRO : TEACHER_INTRO;
-  return `${intro}\n\n${VOICE_RULES}\n\n${OUTPUT_RULES}`;
+  switch (mode) {
+    case "training":
+      return trainingSystemPrompt();
+    case "teacher":
+      return teacherSystemPrompt();
+    default:
+      return techSupportSystemPrompt();
+  }
 }
 
 export class MissingApiKeyError extends Error {
@@ -99,6 +93,10 @@ export interface NextInstructionArgs {
   uploadedContext?: string;
   // Notes the agent recorded on previous turns, oldest to newest.
   agentNotes?: string[];
+  // Facts recalled from EARLIER sessions, already selected and formatted by
+  // the memory ranker. Resolved once at session start so it stays byte-stable
+  // across ticks rather than churning the prompt every turn.
+  recalledMemory?: string;
   // The visible outcome the agent predicted for its last instruction —
   // round-tripped so it can verify the step happened before advancing.
   lastExpectedResult?: string;
@@ -111,6 +109,9 @@ export interface NextInstructionArgs {
   // True on the very first look after the session starts — the model must
   // give the first step, not wait.
   sessionJustStarted?: boolean;
+  // Whether the frame comparator saw a change since the last processed frame.
+  // False means the history frame would be a duplicate, so it is dropped.
+  screenChanged?: boolean;
 }
 
 export async function getNextInstruction(
@@ -125,7 +126,12 @@ export async function getNextInstruction(
   if (!apiKey) throw new MissingApiKeyError();
 
   const client = new Anthropic({ apiKey });
-  const frames = args.frames.slice(-MAX_FRAMES);
+  // When the screen hasn't changed since the last look, the two frames are
+  // near-identical and the older one carries no information — send just the
+  // latest. This is the stall/check-in path, which would otherwise pay full
+  // image cost to show the model the same picture twice.
+  const frameBudget = args.screenChanged === false ? 1 : MAX_FRAMES;
+  const frames = args.frames.slice(-frameBudget);
 
   const userBlocks: Array<
     Anthropic.Messages.TextBlockParam | Anthropic.Messages.ImageBlockParam
@@ -138,17 +144,21 @@ export async function getNextInstruction(
 
   for (let i = 0; i < frames.length; i++) {
     const f = frames[i];
-    const label =
-      i === frames.length - 1
-        ? "Latest screenshot (most recent):"
-        : `Screenshot ${i + 1} of ${frames.length}:`;
+    const isLatest = i === frames.length - 1;
+    // Only the latest frame needs to be sharp enough to read a button label.
+    // Earlier frames are context for "what changed" and are sent small — a
+    // ~4x token saving on every tick that attaches history.
+    const dataUrl = isLatest ? f.dataUrl : toContextResolution(f.dataUrl);
+    const label = isLatest
+      ? "Latest screenshot (most recent, full resolution):"
+      : `Screenshot ${i + 1} of ${frames.length} (earlier, reduced resolution — for comparison only):`;
     userBlocks.push({ type: "text", text: label });
     userBlocks.push({
       type: "image",
       source: {
         type: "base64",
-        media_type: mediaTypeOf(f.dataUrl),
-        data: stripDataUrlPrefix(f.dataUrl),
+        media_type: mediaTypeOf(dataUrl),
+        data: stripDataUrlPrefix(dataUrl),
       },
     });
   }
@@ -165,13 +175,14 @@ export async function getNextInstruction(
     { role: "user", content: userBlocks },
   ];
 
-  // Sentence-level early TTS. "action" is emitted first (per the output
-  // rules) so we can gate speech on it — a "wait" must never speak. In
-  // tech_support mode chunks are held until the action is known; the other
-  // modes have no action key, so chunks flow immediately.
+  // Sentence-level early TTS. "action" is emitted first (per every mode's
+  // output rules) so speech can be gated on it — a "wait" must never speak.
+  // Chunks are held until the action is known, in EVERY mode: the modes that
+  // used to stream ungated would happily start reading a silent turn out loud
+  // before the response revealed it was meant to be silent.
   const actionRe = /"action"\s*:\s*"(\w+)"/;
   const chunker = new InstructionChunker();
-  let gateOpen = args.mode !== "tech_support";
+  let gateOpen = false;
   let gateClosed = false; // action === "wait" — drop everything
   const held: SpeechChunk[] = [];
   const emitChunks = (chunks: SpeechChunk[]) => {
@@ -231,7 +242,16 @@ export async function getNextInstruction(
 
     const resp = await stream.finalMessage();
     const text = extractText(resp);
-    return parseInstruction(text, args.completedSteps);
+    const parsed = parseInstruction(text, args.completedSteps);
+    // Attach token accounting after parsing so instruction-parse.ts stays a
+    // pure, independently-testable module.
+    const usage = normalizeUsage(resp.usage);
+    return {
+      ...parsed,
+      usage,
+      model: MODEL,
+      costUsd: estimateCostUsd(MODEL, usage),
+    };
   } catch (err: unknown) {
     // Anthropic SDK uses status codes on APIError instances.
     const anyErr = err as { status?: number; headers?: Record<string, string> };
@@ -247,8 +267,20 @@ export async function getNextInstruction(
 
 const NEXT_TURN_PROMPT: Record<AppMode, string> = {
   tech_support: TECH_SUPPORT_NEXT_TURN_PROMPT,
-  training: `Look at the latest screenshot. If a step has clearly been completed that isn't in the plan yet, confirm it as a new plan item and ask what comes next. If nothing new is visible, ask a brief scoping question or stay silent (set instruction to an empty string if there is truly nothing to add). Never instruct the user on how to do something. Respond in JSON.`,
-  teacher: `Respond to the user's follow-up message. Teach the next concept or answer their question directly and conversationally. If recommending external resources (videos, articles, docs, courses), set needsResearch=true with a precise search query. Respond in JSON.`,
+  training: TRAINING_NEXT_TURN_PROMPT,
+  teacher: TEACHER_NEXT_TURN_PROMPT,
+};
+
+const STALLED_GUIDANCE: Record<AppMode, string> = {
+  tech_support: TECH_SUPPORT_STALLED_GUIDANCE,
+  training: TRAINING_STALLED_GUIDANCE,
+  teacher: TEACHER_STALLED_GUIDANCE,
+};
+
+const SESSION_START_GUIDANCE: Record<AppMode, string> = {
+  tech_support: TECH_SUPPORT_SESSION_START_GUIDANCE,
+  training: TRAINING_SESSION_START_GUIDANCE,
+  teacher: TEACHER_SESSION_START_GUIDANCE,
 };
 
 function buildContextHeader(args: NextInstructionArgs, frameCount: number): string {
@@ -266,6 +298,9 @@ function buildContextHeader(args: NextInstructionArgs, frameCount: number): stri
   }
   if (args.uploadedContext && args.uploadedContext.trim().length > 0) {
     parts.push(`Reference material the user attached:\n${args.uploadedContext.trim()}`);
+  }
+  if (args.recalledMemory && args.recalledMemory.trim().length > 0) {
+    parts.push(args.recalledMemory.trim());
   }
   if (args.agentNotes && args.agentNotes.length > 0) {
     parts.push(
@@ -301,10 +336,10 @@ function buildContextHeader(args: NextInstructionArgs, frameCount: number): stri
     parts.push(`Timing: ${timing.join("; ")}.`);
   }
   if (args.stalled) {
-    parts.push(TECH_SUPPORT_STALLED_GUIDANCE);
+    parts.push(STALLED_GUIDANCE[args.mode]);
   }
-  if (args.sessionJustStarted && args.mode === "tech_support") {
-    parts.push(TECH_SUPPORT_SESSION_START_GUIDANCE);
+  if (args.sessionJustStarted) {
+    parts.push(SESSION_START_GUIDANCE[args.mode]);
   }
   parts.push(NEXT_TURN_PROMPT[args.mode]);
   return parts.join("\n\n");
@@ -343,10 +378,8 @@ function mediaTypeOf(dataUrl: string): ImageMediaType {
 
 const CLARIFICATION_SYSTEM_PROMPT: Record<AppMode, string> = {
   tech_support: TECH_SUPPORT_CLARIFICATION_PROMPT,
-  training: `You are helping scope a training plan. Given what the user wants to train on, generate exactly 2-3 short, specific questions that pin down who the training is for, what skill or process it covers, and the desired depth. For each question, provide 3-4 answer options: the first 2 should be the most common/recommended answers, the rest are reasonable alternatives. Output JSON only:
-{"questions": [{"question": "...", "options": ["recommended 1", "recommended 2", "alternative 1", "alternative 2"]}]}`,
-  teacher: `You are helping a learner set up a study session. Given the subject they want to learn, generate exactly 2-3 short, specific questions that pin down their current level, what they want to get out of it, and their preferred learning style. For each question, provide 3-4 answer options: the first 2 should be the most common/recommended answers, the rest are reasonable alternatives. Output JSON only:
-{"questions": [{"question": "...", "options": ["recommended 1", "recommended 2", "alternative 1", "alternative 2"]}]}`,
+  training: TRAINING_CLARIFICATION_PROMPT,
+  teacher: TEACHER_CLARIFICATION_PROMPT,
 };
 
 export async function getClarifications(args: {
@@ -392,14 +425,8 @@ export async function getClarifications(args: {
 
 const SESSION_PLAN_SYSTEM_PROMPT: Record<AppMode, string> = {
   tech_support: TECH_SUPPORT_PLAN_PROMPT,
-  training: `You generate a brief, friendly training session plan. Given what the user wants to document, produce a casual spoken overview (under 60 words) and 3-6 steps that specifically describe the content being captured. Steps should name the actual screens, features, or workflows being documented — not generic phrases like "record the process".
-
-${PLAN_RESEARCH_RULE}
-Output JSON only, with no prose or code fences around it: {"overview": "...", "steps": ["...", "...", "..."]}`,
-  teacher: `You generate a brief, friendly learning session plan. Given the subject and the learner's answers, produce a casual spoken overview (under 60 words) and 3-6 specific concepts or questions you'll explore together. Each step should name a concrete topic, not a generic phase like "introduction" or "wrap up".
-
-${PLAN_RESEARCH_RULE}
-Output JSON only, with no prose or code fences around it: {"overview": "...", "steps": ["...", "...", "..."]}`,
+  training: TRAINING_PLAN_PROMPT,
+  teacher: TEACHER_PLAN_PROMPT,
 };
 
 export async function getSessionPlan(args: {

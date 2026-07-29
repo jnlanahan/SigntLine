@@ -22,14 +22,20 @@ export type {
   DisplayInfo,
   DockSide,
   DockState,
+  ElevenVoiceOption,
   HighlightRect,
   InstructionAction,
   InstructionResponse,
+  PushToTalkKey,
   SessionPlan,
   Settings,
   SessionStatus,
   StepPace,
   TtsEngine,
+  TtsPlaybackEngine,
+  TtsProviderChoice,
   TtsVoiceId,
   UploadedContext,
 } from "../../electron/types";
+
+export type { TokenUsage } from "../../electron/usage";

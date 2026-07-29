@@ -10,7 +10,9 @@
 //   troubleshoot → explicit protocol + "troubleshooting" output flag
 //   research  → needsResearch/researchQuery (auto web search mid-session)
 //   replan    → the agent owns upcoming_steps and rewrites them when blocked
-//   remember  → "notes" scratchpad (shared field rules)
+//   note      → "notes" scratchpad, within this session (shared field rules)
+//   remember  → "remember" output field: durable facts that survive to the
+//               NEXT session, recalled into the context header at start
 //
 // Voice and shared field rules come from ./shared so all agents speak with
 // the same voice even as their skills diverge.
@@ -48,9 +50,17 @@ const REPLAN_RULES = `Replanning — "upcoming_steps" is YOUR plan and you own i
 - Tell the user the new route in one plain sentence: "That menu moved in the new UI — we'll get there through Settings instead."
 - Rewrite "upcoming_steps" to the new route in the same message. The plan should always reflect the path you actually intend to take, not the one that died.`;
 
+const MEMORY_RULES = `Memory across sessions — you meet this user again. "notes" is your scratchpad for THIS session; "remember" is different: it records a fact that will still be true and still be useful the NEXT time they start a session, days from now.
+- Set "remember" at most once every few turns, and only for something durable: their setup ("they're on the Windows desktop app, not the web version"), a preference ("prefers keyboard shortcuts over menus"), or a problem and its fix ("their VPN blocks the sync port — turning it off fixes uploads").
+- Do NOT remember anything transient: what's on screen right now, which step they're on, or how this session is going.
+- Do NOT remember anything sensitive: passwords, card numbers, security answers, or personal details they didn't volunteer as relevant to the task.
+- Keep it under 20 words and write it as a standalone fact — future-you sees the sentence with none of this session's context.
+- The context header shows what you already remember. Never re-record something already there, and never read the list back to the user — just quietly use it. If the screen contradicts a remembered fact, believe the screen.`;
+
 const OUTPUT_RULES = `Output rules:
 - Respond with a JSON object only, no prose around it, no code fences.
-- Schema: {"action": "instruct"|"wait"|"acknowledge"|"check_in"|"done", "expected_pace": "quick"|"medium"|"long", "instruction": string, "expected_result": string, "troubleshooting": boolean, "completed_steps": string[], "upcoming_steps": string[], "digression": boolean, "needsResearch": boolean, "researchQuery": string, "notes": string, "highlight": {"x": number, "y": number, "w": number, "h": number} | null}
+- Schema: {"action": "instruct"|"wait"|"acknowledge"|"check_in"|"done", "expected_pace": "quick"|"medium"|"long", "instruction": string, "expected_result": string, "troubleshooting": boolean, "completed_steps": string[], "upcoming_steps": string[], "digression": boolean, "needsResearch": boolean, "researchQuery": string, "notes": string, "highlight": {"x": number, "y": number, "w": number, "h": number} | null, "remember": {"kind": "setup"|"preference"|"history"|"obstacle", "content": string} | null}
+- "remember" is a cross-session fact per the memory rules, or null. Null on almost every turn.
 - Output the "action" key FIRST, before everything else.
 - "action" is your pacing decision per the mode rules above. When action is "wait", set instruction to an empty string.
 - "expected_pace" applies to the step you're giving in an "instruct" — "medium" otherwise.
@@ -62,7 +72,15 @@ ${SHARED_FIELD_RULES}
 
 /** Full per-tick system prompt for the tech support agent. */
 export function techSupportSystemPrompt(): string {
-  return [INTRO, VERIFY_RULES, TROUBLESHOOT_RULES, REPLAN_RULES, VOICE_RULES, OUTPUT_RULES].join("\n\n");
+  return [
+    INTRO,
+    VERIFY_RULES,
+    TROUBLESHOOT_RULES,
+    REPLAN_RULES,
+    MEMORY_RULES,
+    VOICE_RULES,
+    OUTPUT_RULES,
+  ].join("\n\n");
 }
 
 export const TECH_SUPPORT_NEXT_TURN_PROMPT = `Look at the latest screenshot, decide your action per the pacing, verify, and troubleshooting rules, and respond in JSON.`;

@@ -6,69 +6,79 @@ import { describe, it, expect } from "vitest";
 // exported. The real guard is: if someone changes a value, this test breaks
 // and forces a deliberate decision.
 
+async function loopSource(): Promise<string> {
+  const src = await import("../hooks/useSessionLoop?raw");
+  return (src as unknown as { default: string }).default;
+}
+
 describe("timing constants (regression guards)", () => {
-  it("TS_MIN_CALL_SPACING_MS is 5000", async () => {
-    const src = await import("../hooks/useSessionLoop?raw");
-    expect((src as unknown as { default: string }).default).toContain(
-      "TS_MIN_CALL_SPACING_MS = 5_000"
-    );
+  // Lowered from 5_000 (July 2026) together with the quiet period. The loop
+  // looking more often does not make the coach talk more often — "wait" is
+  // the model's most common action — so this buys reaction speed, not
+  // interruptions. Cost is bounded by the session budget guardrails instead.
+  it("TS_MIN_CALL_SPACING_MS is 3000", async () => {
+    expect(await loopSource()).toContain("TS_MIN_CALL_SPACING_MS = 3_000");
   });
 
-  it("TS_QUIET_PERIOD_MS is 3500", async () => {
-    const src = await import("../hooks/useSessionLoop?raw");
-    expect((src as unknown as { default: string }).default).toContain(
-      "TS_QUIET_PERIOD_MS = 3_500"
-    );
+  // Lowered from 3_500 (July 2026). This is the dominant term in perceived
+  // latency after the user clicks something, and the single biggest win
+  // available on "why is it so slow to react".
+  it("TS_QUIET_PERIOD_MS is 1500", async () => {
+    expect(await loopSource()).toContain("TS_QUIET_PERIOD_MS = 1_500");
   });
 
   it("TS_BACKSTOP_MS is 15000", async () => {
-    const src = await import("../hooks/useSessionLoop?raw");
-    expect((src as unknown as { default: string }).default).toContain(
-      "TS_BACKSTOP_MS = 15_000"
-    );
+    expect(await loopSource()).toContain("TS_BACKSTOP_MS = 15_000");
   });
 
   it("TS_SLOW_BACKSTOP_MS is 30000", async () => {
-    const src = await import("../hooks/useSessionLoop?raw");
-    expect((src as unknown as { default: string }).default).toContain(
-      "TS_SLOW_BACKSTOP_MS = 30_000"
-    );
+    expect(await loopSource()).toContain("TS_SLOW_BACKSTOP_MS = 30_000");
   });
 
   it("CHECK_IN_REPEAT_MS is 60000", async () => {
-    const src = await import("../hooks/useSessionLoop?raw");
-    expect((src as unknown as { default: string }).default).toContain(
-      "CHECK_IN_REPEAT_MS = 60_000"
-    );
+    expect(await loopSource()).toContain("CHECK_IN_REPEAT_MS = 60_000");
   });
 
   it("follow-ups bypass the minimum call spacing", async () => {
-    const src = (await import("../hooks/useSessionLoop?raw")) as unknown as {
-      default: string;
-    };
-    expect(src.default).toContain("!state.pendingFollowUp");
+    expect(await loopSource()).toContain("!state.pendingFollowUp");
   });
 
   it("DIVERTED_STALL_MS is 120000", async () => {
-    const src = await import("../hooks/useSessionLoop?raw");
-    expect((src as unknown as { default: string }).default).toContain(
-      "DIVERTED_STALL_MS = 120_000"
-    );
+    expect(await loopSource()).toContain("DIVERTED_STALL_MS = 120_000");
   });
 
   it("a digression can no longer suppress stall check-ins forever", async () => {
-    const src = (await import("../hooks/useSessionLoop?raw")) as unknown as {
-      default: string;
-    };
-    expect(src.default).toContain(
-      "(!s0.diverted || sinceChangeMs >= DIVERTED_STALL_MS)"
+    expect(await loopSource()).toContain(
+      "(!s0.diverted || sinceChangeMs >= DIVERTED_STALL_MS)",
     );
   });
 
   it("first tick after session start is flagged (guaranteed first step)", async () => {
-    const src = (await import("../hooks/useSessionLoop?raw")) as unknown as {
-      default: string;
-    };
-    expect(src.default).toContain("sessionJustStarted");
+    expect(await loopSource()).toContain("sessionJustStarted");
+  });
+
+  // The quiet period is only safe to shorten because speech is gated
+  // separately. If either guard is removed, a fast tick would cut the coach
+  // off mid-sentence — the exact bug that made the app feel like it was
+  // talking over the user.
+  it("a quiet-period tick never fires while the coach is speaking", async () => {
+    const src = await loopSource();
+    expect(src).toContain("if (isSpeaking()) return;");
+  });
+
+  it("the backstop chain waits for speech to finish before ticking", async () => {
+    expect(await loopSource()).toContain("await waitForSpeechEnd();");
+  });
+});
+
+describe("vision payload size (regression guards)", () => {
+  // Each attached frame is ~1.2k tokens of prefill and lands directly on
+  // time-to-first-token. Reduced from 3 to 2 in July 2026; raising it again
+  // is a deliberate latency-for-context trade.
+  it("MAX_FRAMES is 2", async () => {
+    const src = await import("../../electron/claude?raw");
+    expect((src as unknown as { default: string }).default).toContain(
+      "const MAX_FRAMES = 2",
+    );
   });
 });

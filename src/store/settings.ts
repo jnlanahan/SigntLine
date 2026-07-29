@@ -12,7 +12,7 @@ interface SettingsStore {
 
 export const useSettings = create<SettingsStore>((set) => ({
   settings: null,
-  keyStatus: { anthropic: false, openai: false, google: false },
+  keyStatus: { anthropic: false, openai: false, google: false, elevenlabs: false },
   async load() {
     const [settings, keyStatus] = await Promise.all([
       api().settings.get(),

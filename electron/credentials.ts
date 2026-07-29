@@ -2,7 +2,7 @@ import { app, safeStorage } from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-export type CredentialKey = "anthropic" | "openai";
+export type CredentialKey = "anthropic" | "openai" | "elevenlabs";
 
 function keysPath(): string {
   return path.join(app.getPath("userData"), "keys.json");
@@ -28,6 +28,7 @@ function writeStore(store: Record<string, string>): void {
 const ENV_VAR: Record<CredentialKey, string> = {
   anthropic: "ANTHROPIC_API_KEY",
   openai: "OPENAI_API_KEY",
+  elevenlabs: "ELEVENLABS_API_KEY",
 };
 
 export async function getKey(name: CredentialKey): Promise<string | null> {

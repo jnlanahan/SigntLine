@@ -1,40 +1,17 @@
 import { api } from "../lib/api";
-import { useSettings } from "../store/settings";
 import { useSession } from "../store/session";
+import {
+  preprocessForTts,
+  COMPLETION_PHRASES,
+  THINKING_PHRASES,
+  WAITING_PHRASES,
+} from "../../electron/tts/shared";
 
-// Spoken when the user has been idle for a while with no screen change.
-export const WAITING_PHRASES = [
-  "No rush — take your time.",
-  "Still here whenever you're ready.",
-  "Go ahead and give that a try.",
-  "Take a sec, I'm not going anywhere.",
-  "Whenever you're ready, I'll pick it up.",
-  "Feel free to ask if anything's unclear.",
-  "I'm watching — take as long as you need.",
-  "No rush — just ask if you get stuck.",
-];
-
-// Spoken on goal completion.
-export const COMPLETION_PHRASES = [
-  "And that's a wrap. Nice work.",
-  "Done. Not bad at all.",
-  "Nailed it — you're all set.",
-  "That's the whole thing. Well played.",
-  "Goal achieved. See? Wasn't so bad.",
-];
-
-// Spoken immediately after the user asks a question, while Claude is looking
-// at the screen. Research on conversational fillers shows they meaningfully
-// improve perceived responsiveness for waits over ~3s — which is exactly the
-// length of a vision call. The real answer queues BEHIND the filler in the
-// same speech stream, so the filler is never cut off mid-word.
-export const THINKING_PHRASES = [
-  "Let me take a look.",
-  "Hmm, let me see.",
-  "Good question — one sec.",
-  "Let me check that.",
-  "Okay, looking now.",
-];
+// The fixed phrase set lives in electron/tts/shared.ts so the main process can
+// pre-synthesize it at startup without an IPC round-trip. Re-exported here
+// because this is where the rest of the renderer expects to find it — one
+// definition, so a phrase can never drift out of the warm cache.
+export { COMPLETION_PHRASES, THINKING_PHRASES, WAITING_PHRASES };
 
 function pickRandom<T>(arr: readonly T[], avoid?: T): T {
   if (arr.length === 1) return arr[0];
@@ -72,7 +49,9 @@ let speakGeneration = 0;
 // yet) — so callers checking isSpeaking() can't fire a tick that cancels
 // still-loading audio.
 let pendingSpeech = false;
-type TtsMode = "google" | "openai" | "system" | "none" | null;
+// Providers that return real synthesized audio, vs. the browser's own voice.
+type CloudEngine = "elevenlabs" | "google" | "openai";
+type TtsMode = CloudEngine | "system" | "none" | null;
 let lastTtsMode: TtsMode = null;
 
 function recordTtsMode(mode: TtsMode) {
@@ -102,6 +81,15 @@ export function isSpeaking(): boolean {
   return pendingSpeech;
 }
 
+/**
+ * Stop speaking immediately, mid-word. This is barge-in: when the user starts
+ * talking, the coach shuts up the same instant a person would. Also used when
+ * a session is paused or stopped.
+ */
+export function cancelSpeech(): void {
+  cancelCurrent();
+}
+
 function cancelCurrent() {
   speakGeneration++;
   pendingSpeech = false;
@@ -125,20 +113,19 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
 }
 
 type CloudAudio =
-  | { ok: true; audioBase64: string; engine: "google" | "openai" }
+  | { ok: true; audioBase64: string; engine: CloudEngine }
   | { ok: false; message: string };
 
 // Kick off cloud synthesis for one chunk. Called the moment a chunk is
 // enqueued, so chunk N+1 synthesizes while chunk N is still playing.
 async function fetchCloudAudio(text: string): Promise<CloudAudio> {
   try {
-    const voice = useSettings.getState().settings?.ttsVoice;
     // Bound the IPC round-trip. The main process already times out each TTS
-    // engine, but this is a final guard so a stuck channel can never leave
+    // provider, but this is a final guard so a stuck channel can never leave
     // playback hung — on timeout we fall through to the web-speech fallback.
     const result = await withTimeout(
-      api().tts.speak(text, voice),
-      18_000,
+      api().tts.speak(text),
+      20_000,
       "tts_ipc_timeout",
     );
     if ("__error" in result) {
@@ -161,7 +148,7 @@ async function fetchCloudAudio(text: string): Promise<CloudAudio> {
 // the caller then falls back to web speech.
 function playAudioBuffer(
   audioBase64: string,
-  engine: "google" | "openai",
+  engine: CloudEngine,
   gen: number,
 ): Promise<boolean> {
   return new Promise((resolve) => {
@@ -254,13 +241,6 @@ function playWebSpeech(text: string) {
       }
     }, 500);
   }
-}
-
-function preprocessForTts(text: string): string {
-  return text
-    .replace(/^(Okay|Alright|Cool|Nice|Right|Great|Got it|Perfect)(\s+)/i, "$1,$2")
-    .replace(/ — /g, ", ")
-    .replace(/\.{3}$/, ".");
 }
 
 // A speech stream: sentences are enqueued as they arrive (from the streaming

@@ -10,15 +10,22 @@ import type {
   ConversationTurn,
   DisplayInfo,
   DockState,
+  ElevenVoiceOption,
   GoalEvaluation,
   HighlightRect,
   InstructionResponse,
   SessionPlan,
   Settings,
   TtsEngine,
-  TtsVoiceId,
   UploadedContext,
 } from "./types";
+import type {
+  MemoryFact,
+  MemoryKind,
+  SessionRecord,
+  SessionSummary,
+  TrainingPlan,
+} from "./db/schema";
 
 export interface SightLineApi {
   settings: {
@@ -60,6 +67,8 @@ export interface SightLineApi {
       secondsSinceLastSpoke?: number;
       stalled?: boolean;
       sessionJustStarted?: boolean;
+      screenChanged?: boolean;
+      recalledMemory?: string;
     }): Promise<
       | InstructionResponse
       | { __error: "missing_api_key" }
@@ -104,14 +113,13 @@ export interface SightLineApi {
     dragEnd(): void;
   };
   tts: {
-    speak(
-      text: string,
-      voice?: TtsVoiceId,
-    ): Promise<
-      | { audioBase64: string; engine: TtsEngine }
-      | { __error: "missing_openai_key" }
+    speak(text: string): Promise<
+      | { audioBase64: string; engine: TtsEngine; cached: boolean; ms: number }
+      | { __error: "missing_tts_provider"; message: string }
       | { __error: "request_failed"; message: string }
     >;
+    // ElevenLabs voices available on the configured account, for the picker.
+    listVoices(): Promise<ElevenVoiceOption[]>;
   };
   research: {
     search(query: string): Promise<{ text: string } | { __error: string; message?: string }>;
@@ -128,6 +136,12 @@ export interface SightLineApi {
   input: {
     onActivity(cb: () => void): () => void;
   };
+  voice: {
+    // Fires on the press and release edges of the push-to-talk key. Watched
+    // globally in the main process, since SightLine rarely has focus while
+    // the user works in the app being coached.
+    onPushToTalk(cb: (down: boolean) => void): () => void;
+  };
   dock: {
     // Dock/undock the panel as a Windows AppBar on the watched monitor.
     // Resolves with the resulting state (docked stays false if the FFI layer
@@ -139,6 +153,29 @@ export interface SightLineApi {
     // Fires on every dock transition, including involuntary ones (docked
     // monitor unplugged) and width changes.
     onChanged(cb: (state: DockState) => void): () => void;
+  };
+  history: {
+    list(): Promise<SessionSummary[]>;
+    get(id: string): Promise<SessionRecord | null>;
+    save(record: SessionRecord): Promise<{ saved: boolean }>;
+    delete(id: string): Promise<{ deleted: boolean }>;
+  };
+  memory: {
+    // Rank what's known against this goal. Returns the prompt text to hand
+    // the agent plus the facts themselves, so the UI can show what it recalled.
+    recall(goal: string): Promise<{ text: string; facts: MemoryFact[] }>;
+    add(
+      kind: MemoryKind,
+      content: string,
+      sessionId: string | null,
+    ): Promise<{ added: boolean; reason?: "duplicate"; fact?: MemoryFact }>;
+    list(): Promise<MemoryFact[]>;
+    forget(id: string): Promise<{ forgotten: boolean }>;
+  };
+  plans: {
+    list(): Promise<TrainingPlan[]>;
+    save(plan: TrainingPlan): Promise<{ saved: boolean }>;
+    delete(id: string): Promise<{ deleted: boolean }>;
   };
   app: {
     quit(): Promise<void>;
@@ -203,7 +240,8 @@ const api: SightLineApi = {
     dragEnd: () => ipcRenderer.send("window:drag-end"),
   },
   tts: {
-    speak: (text, voice) => ipcRenderer.invoke("tts:speak", { text, voice }),
+    speak: (text) => ipcRenderer.invoke("tts:speak", { text }),
+    listVoices: () => ipcRenderer.invoke("tts:list-voices"),
   },
   research: {
     search: (query) => ipcRenderer.invoke("research:search", { query }),
@@ -227,6 +265,16 @@ const api: SightLineApi = {
       return () => ipcRenderer.removeListener("input:activity", handler);
     },
   },
+  voice: {
+    onPushToTalk: (cb) => {
+      const handler = (
+        _: Electron.IpcRendererEvent,
+        payload: { down: boolean },
+      ) => cb(Boolean(payload?.down));
+      ipcRenderer.on("voice:ptt", handler);
+      return () => ipcRenderer.removeListener("voice:ptt", handler);
+    },
+  },
   dock: {
     set: (docked) => ipcRenderer.invoke("dock:set", { docked }),
     resize: (width) => ipcRenderer.invoke("dock:resize", { width }),
@@ -237,6 +285,24 @@ const api: SightLineApi = {
       ipcRenderer.on("dock:changed", handler);
       return () => ipcRenderer.removeListener("dock:changed", handler);
     },
+  },
+  history: {
+    list: () => ipcRenderer.invoke("history:list"),
+    get: (id) => ipcRenderer.invoke("history:get", { id }),
+    save: (record) => ipcRenderer.invoke("history:save", record),
+    delete: (id) => ipcRenderer.invoke("history:delete", { id }),
+  },
+  memory: {
+    recall: (goal) => ipcRenderer.invoke("memory:recall", { goal }),
+    add: (kind, content, sessionId) =>
+      ipcRenderer.invoke("memory:add", { kind, content, sessionId }),
+    list: () => ipcRenderer.invoke("memory:list"),
+    forget: (id) => ipcRenderer.invoke("memory:forget", { id }),
+  },
+  plans: {
+    list: () => ipcRenderer.invoke("plans:list"),
+    save: (plan) => ipcRenderer.invoke("plans:save", plan),
+    delete: (id) => ipcRenderer.invoke("plans:delete", { id }),
   },
   app: {
     quit: () => ipcRenderer.invoke("app:quit"),

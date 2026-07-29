@@ -2,6 +2,7 @@ import { app } from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Settings } from "./types";
+import { DEFAULT_ELEVEN_VOICE_ID } from "./tts/shared";
 
 const DEFAULTS: Settings = {
   captureIntervalSec: 5,
@@ -13,6 +14,19 @@ const DEFAULTS: Settings = {
   hasSeenPrivacyNotice: false,
   ttsEnabled: true,
   ttsVoice: "nova",
+  ttsProvider: "auto",
+  elevenVoiceId: DEFAULT_ELEVEN_VOICE_ID,
+  ttsSpeed: 1.0,
+  // F9, not a modifier: the user is typing in someone else's app while this
+  // hook is live, so a PTT key that fires on Ctrl+C would be unusable.
+  pushToTalkKey: "f9",
+  bargeInEnabled: true,
+  // Generous by design: the loop's own spacing rules are the real cost
+  // control, and a cap that trips mid-task is worse than no cap. This exists
+  // to catch a runaway, not to ration normal use.
+  sessionBudgetUsd: 3.0,
+  historyEnabled: true,
+  memoryEnabled: true,
   accentColor: "lime",
   windowBounds: null,
   solidBackground: true,

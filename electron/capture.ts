@@ -1,4 +1,4 @@
-import { desktopCapturer, screen } from "electron";
+import { desktopCapturer, nativeImage, screen } from "electron";
 import type { Display, DesktopCapturerSource } from "electron";
 import {
   getCalibration,
@@ -290,6 +290,33 @@ export async function captureFrame(
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+// Width used for historical frames in the vision payload. Only the latest
+// frame has to be sharp enough to read a button label; older frames exist so
+// the model can see what changed, and that survives heavy downscaling. At
+// this width a frame costs ~300 tokens instead of ~1200.
+const CONTEXT_FRAME_WIDTH = 640;
+const CONTEXT_FRAME_QUALITY = 65;
+
+/**
+ * Re-encode an already-captured frame at context resolution. Returns the
+ * original data URL unchanged if anything goes wrong — a bigger image is
+ * always safe, a broken one is not.
+ */
+export function toContextResolution(dataUrl: string): string {
+  try {
+    const image = nativeImage.createFromDataURL(dataUrl);
+    if (image.isEmpty()) return dataUrl;
+    const { width } = image.getSize();
+    if (width <= CONTEXT_FRAME_WIDTH) return dataUrl;
+    const small = image.resize({ width: CONTEXT_FRAME_WIDTH });
+    const jpeg = small.toJPEG(CONTEXT_FRAME_QUALITY);
+    if (jpeg.length === 0) return dataUrl;
+    return `data:image/jpeg;base64,${jpeg.toString("base64")}`;
+  } catch {
+    return dataUrl;
+  }
 }
 
 // On Windows, desktopCapturer's source.display_id often doesn't equal the

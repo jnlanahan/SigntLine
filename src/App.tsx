@@ -5,16 +5,19 @@ import { useSessionLoop } from "./hooks/useSessionLoop";
 import { useRateLimitCountdown } from "./hooks/useRateLimitCountdown";
 import { useTts } from "./hooks/useTts";
 import { api } from "./lib/api";
-import { FollowUpInput } from "./components/FollowUpInput";
+import { Composer } from "./components/Composer";
+import { ProgressRail, PlanList } from "./components/ProgressRail";
 import { GoalPrompt } from "./components/GoalPrompt";
 import { ModeSelect } from "./components/ModeSelect";
 import type { AppMode, CaptureTarget, Clarification, DockSide, SessionStatus } from "./lib/api";
 import { Instruction } from "./components/Instruction";
 import { PrivacyNotice } from "./components/PrivacyNotice";
 import { Settings as SettingsView } from "./components/Settings";
-import { CompletedSteps } from "./components/CompletedSteps";
 import { DockRail } from "./components/DockRail";
 import { ConversationHistory } from "./components/ConversationHistory";
+import { buildSessionRecord, isWorthSaving } from "./lib/sessionRecord";
+import { toPlanSteps } from "./lib/planSteps";
+import { usePushToTalk } from "./hooks/usePushToTalk";
 import { useTheme } from "./design/ThemeProvider";
 import { Glow, Logo, Spinner, CtrlBtn } from "./design/primitives";
 import {
@@ -28,6 +31,7 @@ import {
   IChevron,
 } from "./design/icons";
 import { ar, lt } from "./design/theme";
+import { budgetStatus, formatUsd } from "../electron/usage";
 
 type View = "panel" | "settings" | "privacy";
 
@@ -103,6 +107,9 @@ export default function App() {
   const [planOpen, setPlanOpen]           = useState(false);
   const [evalResult, setEvalResult]       = useState<{ achieved: boolean; verdict: string } | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+  // When the current session began — the store holds progress, not wall-clock
+  // start, and history needs a real duration.
+  const sessionStartedAtRef = useRef<number | null>(null);
 
   // Keep the newest message (usually the current instruction) in view.
   useEffect(() => {
@@ -114,6 +121,22 @@ export default function App() {
 
   const openSettings = useCallback(() => setView("settings"), []);
   useSessionLoop(openSettings);
+
+  // Voice in. Declared before submitFollowUp exists, so the transcript is
+  // routed through a ref-stable callback rather than capturing it.
+  const submitFollowUpRef = useRef<(text: string) => void>(() => {});
+  const { startTalking, stopTalking } = usePushToTalk((text) =>
+    submitFollowUpRef.current(text),
+  );
+
+  // The single ordered plan, derived once and shared by the progress rail and
+  // the step list so the two can never disagree about where you are.
+  const planSteps = toPlanSteps({
+    completedSteps,
+    currentInstruction: instruction,
+    upcomingSteps,
+    done,
+  });
 
   useEffect(() => { void loadSettings(); }, [loadSettings]);
 
@@ -193,6 +216,27 @@ export default function App() {
     if (ctx) useSession.getState().setClarificationContext(ctx);
     if (planSteps.length > 0) useSession.getState().setUpcomingSteps(planSteps);
     setGoal(g);
+    // Mint the id up front so anything the coach learns mid-session can be
+    // attributed to it, even if the session never gets cleanly ended.
+    const id = `sess_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    useSession.getState().setSessionId(id);
+    sessionStartedAtRef.current = Date.now();
+
+    // Recall what we know about this user before the first look at the screen.
+    // Fire-and-forget: memory is an enhancement, and waiting on disk I/O here
+    // would delay the first instruction for no good reason. Worst case the
+    // first tick goes out without it and every tick after has it.
+    void api()
+      .memory.recall(g)
+      .then(({ text, facts }) => {
+        if (!text) return;
+        if (useSession.getState().sessionId !== id) return; // session changed
+        useSession.getState().setRecalledMemory(text);
+        api().log(`[memory] applied ${facts.length} recalled fact(s)`);
+      })
+      .catch(() => {
+        // Memory is never load-bearing.
+      });
     appendTurn({ role: "user", content: `Goal: ${g}`, timestamp: Date.now() });
     // Arm the pacing clocks: the plan overview just spoke, and "now" is the
     // baseline for screen stillness. Without these the stall check-in ladder
@@ -217,8 +261,41 @@ export default function App() {
     useSession.getState().setLastClaudeCallAt(null);
     setStatus("watching");
   }
+  /**
+   * Persist the finished session to local history. Called on stop and on quit
+   * so a session is recorded however the user leaves it — the common case is
+   * closing the window, not pressing Stop.
+   */
+  const persistSession = useCallback(async (verdict: string | null) => {
+    const s = useSession.getState();
+    if (!s.sessionId || !s.goal || !s.mode) return;
+    const record = buildSessionRecord({
+      id: s.sessionId,
+      mode: s.mode,
+      goal: s.goal,
+      startedAt: sessionStartedAtRef.current ?? Date.now(),
+      endedAt: Date.now(),
+      done: s.done,
+      verdict,
+      completedSteps: s.completedSteps,
+      currentInstruction: s.currentInstruction,
+      upcomingSteps: s.upcomingSteps,
+      conversation: s.conversation,
+      usage: s.usage,
+      costUsd: s.costUsd,
+      claudeCalls: s.claudeCalls,
+    });
+    if (!isWorthSaving(record)) return;
+    try {
+      await api().history.save(record);
+    } catch {
+      // History is never allowed to block ending a session.
+    }
+  }, []);
+
   function stop() {
     cancelTts();
+    void persistSession(evalResult?.verdict ?? null);
     reset();
     setShowPeek(false);
     setShowStopConfirm(false);
@@ -265,6 +342,11 @@ export default function App() {
       setStatus("watching");
     }
   }
+
+  // Voice transcripts go through the same path as typed follow-ups.
+  useEffect(() => {
+    submitFollowUpRef.current = submitFollowUp;
+  });
 
   async function attachContext() {
     const files = await api().files.pickContext();
@@ -371,7 +453,13 @@ export default function App() {
 
       {showQuitConfirm && (
         <QuitConfirmBanner
-          onConfirm={() => void api().app.quit()}
+          onConfirm={() => {
+            // Save before the process goes away — quitting mid-session is the
+            // most common way a session actually ends.
+            void persistSession(evalResult?.verdict ?? null).finally(() => {
+              void api().app.quit();
+            });
+          }}
           onCancel={() => setShowQuitConfirm(false)}
         />
       )}
@@ -404,43 +492,34 @@ export default function App() {
           )}
         </div>
       ) : (
-        /* Session layout: chat-first. The conversation fills the panel; the
-           current instruction is the newest message IN the stream (so nothing
-           ever covers the chat); the plan lives in a drawer under the strip. */
-        <div className="flex flex-1 flex-col" style={{ minHeight: 0, position: "relative" }}>
-          {/* One-line goal + plan strip — click to open the plan drawer */}
-          <GoalStrip
+        /* Session layout, top to bottom: progress rail, optional plan list,
+           conversation, composer. Every region is in the normal flex flow —
+           nothing floats over anything else, so opening the plan shrinks the
+           conversation instead of burying it. */
+        <div className="flex flex-1 flex-col" style={{ minHeight: 0 }}>
+          <ProgressRail
             label={MODE_META[mode].goalLabel}
             goal={goal}
-            stepsDone={completedSteps.length}
-            stepsTotal={
-              completedSteps.length + (instruction ? 1 : 0) + upcomingSteps.length
-            }
+            steps={planSteps}
             open={planOpen}
             docked={docked}
             onToggle={() => setPlanOpen((v) => !v)}
           />
 
-          {/* Plan drawer — overlays the chat, never squeezes it */}
           {planOpen && (
-            <PlanDrawer top={docked ? 92 : 36} onClose={() => setPlanOpen(false)}>
-              <CompletedSteps
-                completedSteps={completedSteps}
-                currentInstruction={instruction}
-                upcomingSteps={upcomingSteps}
-                noun={MODE_META[mode].stepNoun}
-              />
-              <div style={{ marginTop: 12 }}>
+            <>
+              <PlanList steps={planSteps} />
+              <div style={{ flexShrink: 0, padding: "8px 16px 10px", borderBottom: `1px solid ${lt(0.08)}` }}>
                 <ContextPanel
                   fileNames={attachedFileNames}
                   notes={agentNotes}
                   onAttach={attachContext}
                 />
               </div>
-            </PlanDrawer>
+            </>
           )}
 
-          {/* Chat stream */}
+          {/* Conversation — the one region that grows and scrolls */}
           <div
             className="flex-1 overflow-y-auto sl-scroll"
             style={{ minHeight: 0, padding: "10px 12px 4px" }}
@@ -477,12 +556,13 @@ export default function App() {
             <div ref={chatEndRef} />
           </div>
 
-          {/* Pinned follow-up input */}
           <div className="px-3 pb-2 pt-1" style={{ flexShrink: 0 }}>
-            <FollowUpInput
+            <Composer
               isThinking={status === "thinking" || status === "evaluating"}
               mode={mode}
               onSubmit={submitFollowUp}
+              onStartTalking={startTalking}
+              onStopTalking={stopTalking}
             />
           </div>
         </div>
@@ -665,173 +745,6 @@ function DockResizeHandle({ side }: { side: DockSide }) {
       onMouseEnter={(e) => { if (!active) (e.currentTarget as HTMLElement).style.background = lt(0.08); }}
       onMouseLeave={(e) => { if (!active) (e.currentTarget as HTMLElement).style.background = "transparent"; }}
     />
-  );
-}
-
-/* ── Goal strip + plan drawer ── */
-
-function GoalStrip({
-  label,
-  goal,
-  stepsDone,
-  stepsTotal,
-  open,
-  docked = false,
-  onToggle,
-}: {
-  label: string;
-  goal: string;
-  stepsDone: number;
-  stepsTotal: number;
-  open: boolean;
-  docked?: boolean;
-  onToggle(): void;
-}) {
-  const T = useTheme();
-
-  // Docked "course header": the goal is the course title (two lines allowed)
-  // with a real progress bar underneath — the desktop is the classroom, this
-  // is the course rail. Click still opens the curriculum drawer.
-  if (docked) {
-    const pct = stepsTotal > 0 ? Math.min(100, (stepsDone / stepsTotal) * 100) : 0;
-    return (
-      <button
-        type="button"
-        className="no-drag"
-        onClick={onToggle}
-        title={open ? "Hide the curriculum" : "Show the curriculum and attached context"}
-        style={{
-          display: "flex", flexDirection: "column", gap: 6,
-          width: "100%", textAlign: "left",
-          padding: "9px 14px 10px", border: 0, cursor: "pointer",
-          borderBottom: `1px solid ${lt(0.08)}`,
-          background: open ? lt(0.05) : lt(0.02),
-          flexShrink: 0,
-        }}
-      >
-        <span style={{ display: "flex", alignItems: "center", gap: 8, width: "100%" }}>
-          <span style={{
-            fontSize: 9, fontWeight: 700, letterSpacing: "0.12em",
-            textTransform: "uppercase", color: T.ink3, flexShrink: 0,
-          }}>
-            {label}
-          </span>
-          <span style={{ flex: 1 }} />
-          {stepsTotal > 0 && (
-            <span style={{ fontSize: 11, fontWeight: 600, color: T.accentText, flexShrink: 0 }}>
-              Step {Math.min(stepsDone + 1, stepsTotal)} of {stepsTotal}
-            </span>
-          )}
-          <span style={{
-            color: T.ink3, flexShrink: 0, display: "inline-flex",
-            transform: open ? "rotate(-90deg)" : "rotate(90deg)",
-            transition: "transform 160ms",
-          }}>
-            <IChevron />
-          </span>
-        </span>
-        <span style={{
-          fontSize: 13, lineHeight: 1.35, color: T.ink, fontWeight: 600,
-          display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
-          overflow: "hidden",
-        }}>
-          {goal}
-        </span>
-        {stepsTotal > 0 && (
-          <span aria-hidden style={{
-            display: "block", width: "100%", height: 4, borderRadius: 4,
-            background: lt(0.08), overflow: "hidden",
-          }}>
-            <span style={{
-              display: "block", height: "100%", width: `${pct}%`,
-              borderRadius: 4,
-              background: `linear-gradient(90deg, ${T.accent}, ${T.accentDeep})`,
-              transition: "width 400ms ease",
-            }} />
-          </span>
-        )}
-      </button>
-    );
-  }
-
-  return (
-    <button
-      type="button"
-      className="no-drag"
-      onClick={onToggle}
-      title={open ? "Hide the plan" : "Show the plan and attached context"}
-      style={{
-        display: "flex", alignItems: "center", gap: 8,
-        width: "100%", textAlign: "left",
-        padding: "7px 14px", border: 0, cursor: "pointer",
-        borderBottom: `1px solid ${lt(0.08)}`,
-        background: open ? lt(0.05) : lt(0.02),
-        flexShrink: 0,
-      }}
-    >
-      <span style={{
-        fontSize: 9, fontWeight: 700, letterSpacing: "0.12em",
-        textTransform: "uppercase", color: T.ink3, flexShrink: 0,
-      }}>
-        {label}
-      </span>
-      <span style={{
-        flex: 1, minWidth: 0, fontSize: 12, color: T.ink2,
-        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-      }}>
-        {goal}
-      </span>
-      {stepsTotal > 0 && (
-        <span style={{ fontSize: 11, fontWeight: 600, color: T.accentText, flexShrink: 0 }}>
-          Step {Math.min(stepsDone + 1, stepsTotal)} of {stepsTotal}
-        </span>
-      )}
-      <span style={{
-        color: T.ink3, flexShrink: 0, display: "inline-flex",
-        transform: open ? "rotate(-90deg)" : "rotate(90deg)",
-        transition: "transform 160ms",
-      }}>
-        <IChevron />
-      </span>
-    </button>
-  );
-}
-
-function PlanDrawer({
-  children,
-  top = 36,
-  onClose,
-}: {
-  children: React.ReactNode;
-  top?: number;
-  onClose(): void;
-}) {
-  const T = useTheme();
-  return (
-    <div
-      className="no-drag sl-scroll sl-sheet-in"
-      style={{
-        position: "absolute", top, left: 10, right: 10, zIndex: 40,
-        maxHeight: "62%", overflowY: "auto",
-        borderRadius: 13, border: `1px solid ${lt(0.16)}`,
-        background: T.surface,
-        boxShadow: "0 18px 44px -14px rgba(22,26,14,0.45)",
-        padding: "12px 14px",
-      }}
-    >
-      {children}
-      <button
-        type="button"
-        onClick={onClose}
-        style={{
-          marginTop: 10, borderRadius: 8, border: `1px solid ${lt(0.1)}`,
-          background: "transparent", color: T.ink3,
-          fontSize: 11, padding: "4px 12px", cursor: "pointer",
-        }}
-      >
-        Close
-      </button>
-    </div>
   );
 }
 
@@ -1183,20 +1096,9 @@ function ControlBar({
         </span>
       )}
 
-      {/* Live status pill */}
-      <span style={{
-        display: "inline-flex", alignItems: "center", gap: 6,
-        fontSize: 10, fontWeight: 700, letterSpacing: "0.06em",
-        color: T.accentText, padding: "5px 10px", borderRadius: 999,
-        background: ar(T.accentRGB, 0.14), border: `1px solid ${ar(T.accentRGB, 0.4)}`,
-        flexShrink: 0,
-      }}>
-        <span style={{
-          width: 6, height: 6, borderRadius: "50%", background: T.accentDeep,
-          boxShadow: `0 0 8px ${T.accent}`, animation: "sl-blink 1.6s ease-in-out infinite",
-        }} />
-        LIVE
-      </span>
+      {/* Live pill doubling as the spend meter — the cost of watching someone's
+          screen should be visible while it's happening, not after the fact. */}
+      <CostPill />
 
       {/* "I'm done — check my work" */}
       {(status === "watching" || status === "waiting") && (
@@ -1221,6 +1123,71 @@ function ControlBar({
         <StopIcon />
       </CtrlBtn>
     </div>
+  );
+}
+
+/* ── Spend meter ──
+   Doubles as the "live" indicator. Turns amber as the session approaches its
+   budget and red once it stops, so the cap is never a silent surprise. */
+
+function CostPill() {
+  const T = useTheme();
+  const costUsd = useSession((s) => s.costUsd);
+  const calls = useSession((s) => s.claudeCalls);
+  const limit = useSettings((s) => s.settings?.sessionBudgetUsd ?? 0);
+  const budget = budgetStatus(costUsd, limit);
+
+  const tone =
+    budget.level === "exceeded"
+      ? { fg: "#C22F2F", bg: "rgba(219,59,59,0.12)", bd: "rgba(219,59,59,0.4)" }
+      : budget.level === "warn"
+        ? { fg: "#B4770C", bg: "rgba(192,124,16,0.12)", bd: "rgba(192,124,16,0.4)" }
+        : {
+            fg: T.accentText,
+            bg: ar(T.accentRGB, 0.14),
+            bd: ar(T.accentRGB, 0.4),
+          };
+
+  const title =
+    limit > 0
+      ? `This session: ${formatUsd(costUsd)} of a ${formatUsd(limit)} cap, over ${calls} look${calls === 1 ? "" : "s"} at your screen`
+      : `This session: ${formatUsd(costUsd)} over ${calls} look${calls === 1 ? "" : "s"} at your screen (no cap set)`;
+
+  return (
+    <span
+      title={title}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        fontSize: 10.5,
+        fontWeight: 700,
+        letterSpacing: "0.04em",
+        color: tone.fg,
+        padding: "5px 10px",
+        borderRadius: 999,
+        background: tone.bg,
+        border: `1px solid ${tone.bd}`,
+        flexShrink: 0,
+        fontVariantNumeric: "tabular-nums",
+      }}
+    >
+      <span
+        aria-hidden
+        style={{
+          width: 6,
+          height: 6,
+          borderRadius: "50%",
+          background: tone.fg,
+          boxShadow: `0 0 8px ${tone.fg}`,
+          animation:
+            budget.level === "exceeded"
+              ? "none"
+              : "sl-blink 1.6s ease-in-out infinite",
+        }}
+      />
+      {formatUsd(costUsd)}
+    </span>
   );
 }
 

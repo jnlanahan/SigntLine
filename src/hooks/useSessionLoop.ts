@@ -4,6 +4,7 @@ import { useSettings } from "../store/settings";
 import { api } from "../lib/api";
 import { hashFrame, hashDistance, hashesAreSimilar } from "../lib/frameHash";
 import { shouldCallClaude, type TickReason } from "../lib/loopGate";
+import { budgetStatus, cacheHitRate, formatUsd } from "../../electron/usage";
 import {
   openSpeechStream,
   randomCompletionPhrase,
@@ -20,11 +21,20 @@ const RETRY_DELAY_MS = 10_000;
 // Tech-support pacing. The loop looks at the screen often; Claude decides
 // each tick whether to speak ("instruct"/"acknowledge"/"check_in"/"done")
 // or stay silent ("wait"), so frequent ticks don't rush the user.
-const TS_MIN_CALL_SPACING_MS = 5_000;
+//
+// Looking more often is NOT the same as talking more often — "wait" is the
+// model's most common action by design, and speech is separately gated on
+// isSpeaking()/waitForSpeechEnd(). So these values buy responsiveness without
+// buying interruptions: the cost of a tighter quiet period is tokens, and the
+// budget guardrails (electron/usage.ts) are what bound that.
+const TS_MIN_CALL_SPACING_MS = 3_000;
 const TS_BACKSTOP_MS = 15_000;
 const TS_SLOW_BACKSTOP_MS = 30_000;
 const TS_SLOW_AFTER_MS = 120_000; // screen still this long → slow backstop
-const TS_QUIET_PERIOD_MS = 3_500; // silence after input before a check
+// Silence after input before a check. This is the dominant term in "why did
+// it take so long to react after I clicked something" — every millisecond
+// here is felt directly by the user.
+const TS_QUIET_PERIOD_MS = 1_500;
 
 // How long the screen must be still before a stall tick (which lets Claude
 // check in), scaled by the expected pace of the current step.
@@ -118,11 +128,37 @@ export function useSessionLoop(onNeedsApiKey: () => void) {
       if (state.status !== "watching") return;
       if (!state.goal) return;
 
+      // The user is mid-sentence on the mic. Nothing this tick could produce
+      // is worth talking over them, and the answer would be stale the moment
+      // they finish — the release of the key fires its own tick.
+      if (state.listening || state.transcribing) {
+        log(`tick(${reason}) skipped: user is speaking`);
+        return;
+      }
+
       const now = Date.now();
       if (state.rateLimitUntil && now < state.rateLimitUntil) {
         log(
           `tick(${reason}) skipped: rate-limited for ${Math.round((state.rateLimitUntil - now) / 1000)}s more`,
         );
+        return;
+      }
+
+      // Budget guardrail. Checked before the call, not after, so the cap is
+      // actually a cap. A limit of 0 disables it entirely — see budgetStatus.
+      const budget = budgetStatus(
+        state.costUsd,
+        useSettings.getState().settings?.sessionBudgetUsd ?? 0,
+      );
+      if (budget.level === "exceeded") {
+        log(
+          `tick(${reason}) BLOCKED: session budget reached (${formatUsd(state.costUsd)} of ${formatUsd(budget.limitUsd)})`,
+        );
+        useSession.getState().setPauseReason("budget");
+        useSession.getState().setError(
+          `Session budget reached (${formatUsd(state.costUsd)}). Raise the limit in Settings to keep going.`,
+        );
+        useSession.getState().setStatus("paused");
         return;
       }
 
@@ -275,6 +311,7 @@ export function useSessionLoop(onNeedsApiKey: () => void) {
           clarificationContext: s.clarificationContext,
           uploadedContext: s.uploadedContext,
           agentNotes: s.agentNotes,
+          recalledMemory: s.recalledMemory,
           lastExpectedResult: s.lastExpectedResult ?? undefined,
           secondsSinceScreenChange: Math.round(sinceChangeMs / 1000),
           secondsSinceLastSpoke: s.lastSpokeAt
@@ -282,6 +319,7 @@ export function useSessionLoop(onNeedsApiKey: () => void) {
             : undefined,
           stalled,
           sessionJustStarted,
+          screenChanged,
         });
 
         // Handle error envelope
@@ -317,6 +355,22 @@ export function useSessionLoop(onNeedsApiKey: () => void) {
           return;
         }
 
+        // Token accounting. Logged with the cache hit rate because a rate that
+        // collapses toward zero is the signature of a broken cached prefix —
+        // the loop still works, it just silently costs several times more.
+        if (result.usage) {
+          useSession
+            .getState()
+            .recordUsage(result.usage, result.costUsd ?? 0);
+          const s2 = useSession.getState();
+          log(
+            `usage in=${result.usage.inputTokens} out=${result.usage.outputTokens} ` +
+              `cacheRead=${result.usage.cacheReadTokens} cacheWrite=${result.usage.cacheCreationTokens} ` +
+              `hitRate=${Math.round(cacheHitRate(s2.usage) * 100)}% ` +
+              `call=${formatUsd(result.costUsd ?? 0)} session=${formatUsd(s2.costUsd)} over ${s2.claudeCalls} calls`,
+          );
+        }
+
         log(
           `Claude ← action=${result.action} in ${Date.now() - callStartedAt}ms digression=${result.digression} troubleshooting=${result.troubleshooting} pace=${result.expectedPace} highlight=${result.highlight ? "yes" : "no"} instr="${(result.instruction ?? "").slice(0, 60)}"`,
         );
@@ -332,6 +386,22 @@ export function useSessionLoop(onNeedsApiKey: () => void) {
 
         if (result.notes && result.notes.trim().length > 0) {
           useSession.getState().appendAgentNote(result.notes.trim());
+        }
+
+        // A durable fact for FUTURE sessions. Persisted immediately rather
+        // than at session end, so a crash or a force-quit doesn't lose what
+        // the coach just learned about this person's setup.
+        if (result.remember?.content) {
+          const fact = result.remember;
+          void api()
+            .memory.add(fact.kind, fact.content, useSession.getState().sessionId)
+            .then((res) => {
+              log(
+                res.added
+                  ? `remembered (${fact.kind}): ${fact.content}`
+                  : `remember skipped (${res.reason ?? "disabled"}): ${fact.content}`,
+              );
+            });
         }
 
         // Digression: user navigated away from the task. Speak the warm pause
@@ -621,6 +691,9 @@ export function useSessionLoop(onNeedsApiKey: () => void) {
     if (s.diverted) return;
     // Don't fire a tick while TTS is actively playing — it would cancel the audio.
     if (isSpeaking()) return;
+    // Nor while the user is holding the mic — the keystrokes that opened it
+    // are exactly the "activity" that would otherwise trigger this.
+    if (s.listening || s.transcribing) return;
     const cfg = getModeConfig(s.mode);
     if (cfg.quietPeriodMs <= 0) return;
     void tickRef.current("input");

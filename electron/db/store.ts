@@ -1,0 +1,215 @@
+// Local persistence for sessions, memory, and training plans.
+//
+// Backed by JSON files under %APPDATA%/SightLine/data. The volume is tiny —
+// a few hundred sessions of text — so a database process would be pure
+// overhead here, and this keeps the app working with zero setup and zero
+// network. The repository functions below are the seam: swapping them for
+// Neon-backed implementations against ./schema.ts's DDL changes nothing above
+// this file.
+//
+// Invariant: persistence is best-effort. Every read falls back to empty and
+// every write swallows its error — losing history is bad, but taking a live
+// coaching session down because a disk write failed is worse.
+
+import { app } from "electron";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { logLine } from "../log";
+import type {
+  MemoryFact,
+  SessionRecord,
+  SessionSummary,
+  TrainingPlan,
+} from "./schema";
+
+// Keep the on-disk history bounded. Well beyond what anyone will scroll, and
+// small enough that the index stays instant to load.
+const MAX_SESSIONS = 500;
+// Memory that grows without limit would eventually crowd out its own ranking.
+const MAX_FACTS = 400;
+
+function dataDir(): string {
+  return path.join(app.getPath("userData"), "data");
+}
+
+function ensureDir(dir: string): boolean {
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    return true;
+  } catch (err) {
+    logLine(`[store] could not create ${dir}: ${String(err)}`);
+    return false;
+  }
+}
+
+function readJson<T>(file: string, fallback: T): T {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf-8")) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJson(file: string, value: unknown): boolean {
+  try {
+    if (!ensureDir(path.dirname(file))) return false;
+    // Write-then-rename: a crash mid-write can't leave truncated JSON that
+    // would then fail to parse and silently read back as "no history".
+    const tmp = `${file}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(value, null, 2), "utf-8");
+    fs.renameSync(tmp, file);
+    return true;
+  } catch (err) {
+    logLine(`[store] write failed for ${path.basename(file)}: ${String(err)}`);
+    return false;
+  }
+}
+
+// Sortable, collision-resistant, and readable in a directory listing.
+export function newId(prefix: string): string {
+  const stamp = Date.now().toString(36);
+  const rand = Math.random().toString(36).slice(2, 10);
+  return `${prefix}_${stamp}${rand}`;
+}
+
+// ── Sessions ──
+
+function sessionsDir(): string {
+  return path.join(dataDir(), "sessions");
+}
+
+function indexFile(): string {
+  return path.join(dataDir(), "sessions-index.json");
+}
+
+function summarize(record: SessionRecord): SessionSummary {
+  return {
+    id: record.id,
+    userId: record.userId,
+    mode: record.mode,
+    goal: record.goal,
+    startedAt: record.startedAt,
+    endedAt: record.endedAt,
+    outcome: record.outcome,
+    costUsd: record.costUsd,
+    stepsCompleted: record.steps.filter((s) => s.state === "completed").length,
+  };
+}
+
+export function saveSession(record: SessionRecord): boolean {
+  const ok = writeJson(
+    path.join(sessionsDir(), `${record.id}.json`),
+    record,
+  );
+  if (!ok) return false;
+
+  const index = listSessions();
+  const next = [summarize(record), ...index.filter((s) => s.id !== record.id)]
+    .sort((a, b) => b.startedAt - a.startedAt)
+    .slice(0, MAX_SESSIONS);
+  writeJson(indexFile(), next);
+
+  // Drop the detail files for anything that fell off the end of the index.
+  const kept = new Set(next.map((s) => s.id));
+  try {
+    for (const file of fs.readdirSync(sessionsDir())) {
+      if (!file.endsWith(".json")) continue;
+      if (!kept.has(file.replace(/\.json$/, ""))) {
+        fs.unlinkSync(path.join(sessionsDir(), file));
+      }
+    }
+  } catch {
+    // pruning is best-effort
+  }
+  return true;
+}
+
+export function listSessions(): SessionSummary[] {
+  return readJson<SessionSummary[]>(indexFile(), []);
+}
+
+export function getSession(id: string): SessionRecord | null {
+  const file = path.join(sessionsDir(), `${id}.json`);
+  return readJson<SessionRecord | null>(file, null);
+}
+
+export function deleteSession(id: string): boolean {
+  try {
+    fs.unlinkSync(path.join(sessionsDir(), `${id}.json`));
+  } catch {
+    // already gone
+  }
+  return writeJson(
+    indexFile(),
+    listSessions().filter((s) => s.id !== id),
+  );
+}
+
+// ── Memory facts ──
+
+function memoryFile(): string {
+  return path.join(dataDir(), "memory.json");
+}
+
+export function listFacts(): MemoryFact[] {
+  return readJson<MemoryFact[]>(memoryFile(), []);
+}
+
+export function saveFacts(facts: MemoryFact[]): boolean {
+  // Prune the least useful first when over the cap: archived, then oldest-used.
+  const trimmed =
+    facts.length <= MAX_FACTS
+      ? facts
+      : [...facts]
+          .sort((a, b) => {
+            if (a.archived !== b.archived) return a.archived ? 1 : -1;
+            return b.lastUsedAt - a.lastUsedAt;
+          })
+          .slice(0, MAX_FACTS);
+  return writeJson(memoryFile(), trimmed);
+}
+
+export function addFact(fact: MemoryFact): boolean {
+  return saveFacts([fact, ...listFacts()]);
+}
+
+/** Mark facts as surfaced — feeds ranking so useful memory stays on top. */
+export function touchFacts(ids: readonly string[], now: number): void {
+  if (ids.length === 0) return;
+  const idSet = new Set(ids);
+  const next = listFacts().map((f) =>
+    idSet.has(f.id) ? { ...f, lastUsedAt: now, useCount: f.useCount + 1 } : f,
+  );
+  saveFacts(next);
+}
+
+/** Archive rather than delete, so the same fact isn't relearned immediately. */
+export function forgetFact(id: string): boolean {
+  return saveFacts(
+    listFacts().map((f) => (f.id === id ? { ...f, archived: true } : f)),
+  );
+}
+
+// ── Training plans ──
+
+function plansFile(): string {
+  return path.join(dataDir(), "plans.json");
+}
+
+export function listPlans(): TrainingPlan[] {
+  return readJson<TrainingPlan[]>(plansFile(), []).sort(
+    (a, b) => b.updatedAt - a.updatedAt,
+  );
+}
+
+export function savePlan(plan: TrainingPlan): boolean {
+  const others = listPlans().filter((p) => p.id !== plan.id);
+  return writeJson(plansFile(), [plan, ...others]);
+}
+
+export function deletePlan(id: string): boolean {
+  return writeJson(
+    plansFile(),
+    listPlans().filter((p) => p.id !== id),
+  );
+}

@@ -3,7 +3,15 @@ import { useSettings } from "../store/settings";
 import { api } from "../lib/api";
 import { useTheme } from "../design/ThemeProvider";
 import { ar, lt } from "../design/theme";
-import type { AccentName, TtsVoiceId } from "../lib/api";
+import type {
+  AccentName,
+  ElevenVoiceOption,
+  PushToTalkKey,
+  TtsPlaybackEngine,
+  TtsProviderChoice,
+  TtsVoiceId,
+} from "../lib/api";
+import type { MemoryFact } from "../../electron/db/schema";
 import { useTts, getTtsMode } from "../hooks/useTts";
 import { ScreenPicker } from "./ScreenPicker";
 
@@ -335,10 +343,107 @@ export function Settings({ onClose }: Props) {
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <span style={sectionLabel}>Voice</span>
           <VoicePicker
-            disabled={!settings.ttsEnabled || (!keyStatus.openai && !keyStatus.google)}
+            disabled={
+              !settings.ttsEnabled ||
+              (!keyStatus.openai && !keyStatus.google && !keyStatus.elevenlabs)
+            }
             selectStyle={selectStyle}
             ghostBtnStyle={ghostBtnStyle}
           />
+        </div>
+
+        {/* Talking back */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <span style={sectionLabel}>Talking back</span>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+            <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+              <span style={{ fontSize: 12.5, fontWeight: 500, color: T.ink }}>
+                Hold-to-talk key
+              </span>
+              <span style={{ marginTop: 2, fontSize: 10, color: T.ink3 }}>
+                Hold it anywhere — even in another app — to interrupt and speak
+              </span>
+            </div>
+            <select
+              value={settings.pushToTalkKey}
+              onChange={(e) =>
+                void patch({ pushToTalkKey: e.target.value as PushToTalkKey })
+              }
+              style={{ ...selectStyle, width: 110, flexShrink: 0 }}
+            >
+              <option value="f9">F9</option>
+              <option value="f8">F8</option>
+              <option value="ctrl">Ctrl</option>
+              <option value="alt">Alt</option>
+              <option value="none">Off</option>
+            </select>
+          </div>
+          <ToggleRow
+            T={T}
+            label="Interrupt when I start talking"
+            hint="The coach stops mid-sentence the moment you hold the key, like a person would"
+            checked={settings.bargeInEnabled}
+            onChange={(v) => void patch({ bargeInEnabled: v })}
+            accentRGB={T.accentRGB}
+            accent={T.accent}
+          />
+          {!keyStatus.openai && (
+            <p style={{ margin: 0, fontSize: 10, color: T.ink3 }}>
+              Speaking needs an OpenAI key for transcription — add one above.
+            </p>
+          )}
+        </div>
+
+        {/* Memory & history */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <span style={sectionLabel}>Memory</span>
+          <ToggleRow
+            T={T}
+            label="Remember me between sessions"
+            hint="Durable facts only — your setup and preferences, never passwords or personal details"
+            checked={settings.memoryEnabled}
+            onChange={(v) => void patch({ memoryEnabled: v })}
+            accentRGB={T.accentRGB}
+            accent={T.accent}
+          />
+          <ToggleRow
+            T={T}
+            label="Keep session history"
+            hint="Transcripts and progress stay on this computer — screenshots are never saved"
+            checked={settings.historyEnabled}
+            onChange={(v) => void patch({ historyEnabled: v })}
+            accentRGB={T.accentRGB}
+            accent={T.accent}
+          />
+          <MemoryList ghostBtnStyle={ghostBtnStyle} />
+        </div>
+
+        {/* Spend */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <span style={sectionLabel}>Spend</span>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+            <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+              <span style={{ fontSize: 12.5, fontWeight: 500, color: T.ink }}>
+                Stop a session at
+              </span>
+              <span style={{ marginTop: 2, fontSize: 10, color: T.ink3 }}>
+                A runaway guard, not a ration. A typical hour costs about $1.
+              </span>
+            </div>
+            <select
+              value={String(settings.sessionBudgetUsd)}
+              onChange={(e) =>
+                void patch({ sessionBudgetUsd: Number(e.target.value) })
+              }
+              style={{ ...selectStyle, width: 110, flexShrink: 0 }}
+            >
+              <option value="1">$1</option>
+              <option value="3">$3</option>
+              <option value="5">$5</option>
+              <option value="10">$10</option>
+              <option value="0">No limit</option>
+            </select>
+          </div>
         </div>
 
         {/* Diagnostics */}
@@ -438,42 +543,109 @@ function VoicePicker({
 }) {
   const settings = useSettings((s) => s.settings);
   const patch    = useSettings((s) => s.patch);
+  const keyStatus = useSettings((s) => s.keyStatus);
   const { speak } = useTts();
   const T = useTheme();
   const [previewResult, setPreviewResult] = useState<
-    "google" | "openai" | "system" | "none" | "pending" | null
+    TtsPlaybackEngine | "pending" | null
   >(null);
+
+  const elevenVoices = useSettings((s) => s.settings?.elevenVoiceId);
+  const [voices, setVoices] = useState<ElevenVoiceOption[]>([]);
+
+  // The account's real voice list. Falls back to a curated preset list inside
+  // the main process, so this is never empty even with no key.
+  useEffect(() => {
+    let alive = true;
+    void api()
+      .tts.listVoices()
+      .then((v) => {
+        if (alive) setVoices(v);
+      })
+      .catch(() => {
+        /* the picker just stays on presets */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   if (!settings) return null;
 
+  const provider = settings.ttsProvider;
+  // ElevenLabs is what's actually used when "auto" resolves, provided a key
+  // exists — so its voice list is the relevant one in both cases.
+  const usingEleven =
+    provider === "elevenlabs" || (provider === "auto" && keyStatus.elevenlabs);
+
   function handlePreview() {
-    const opt = VOICE_OPTIONS.find((v) => v.id === settings!.ttsVoice) ?? VOICE_OPTIONS[0];
     setPreviewResult("pending");
-    speak(opt.sample);
+    speak(
+      "Hey — I'm your coach. I'll watch your screen and walk you through it, one step at a time.",
+    );
     window.setTimeout(() => {
       setPreviewResult(getTtsMode() ?? "none");
-    }, 2500);
+    }, 3500);
   }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <select
+        title="Speech provider"
+        disabled={disabled}
+        value={provider}
+        onChange={(e) =>
+          void patch({ ttsProvider: e.target.value as TtsProviderChoice })
+        }
+        style={{ ...selectStyle, opacity: disabled ? 0.4 : 1 }}
+      >
+        <option value="auto">
+          Best available{keyStatus.elevenlabs ? " (ElevenLabs)" : keyStatus.google ? " (Google)" : ""}
+        </option>
+        <option value="elevenlabs">
+          ElevenLabs — most human, fastest{keyStatus.elevenlabs ? "" : " (no key)"}
+        </option>
+        <option value="google">
+          Google Chirp 3{keyStatus.google ? "" : " (no key)"}
+        </option>
+        <option value="openai">
+          OpenAI{keyStatus.openai ? "" : " (no key)"}
+        </option>
+      </select>
+
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <select
-          title="Voice"
-          disabled={disabled}
-          value={settings.ttsVoice}
-          onChange={(e) => void patch({ ttsVoice: e.target.value as TtsVoiceId })}
-          style={{ ...selectStyle, flex: 1, opacity: disabled ? 0.4 : 1 }}
-        >
-          {VOICE_OPTIONS.map((v) => (
-            <option key={v.id} value={v.id}>{v.label}</option>
-          ))}
-        </select>
+        {usingEleven ? (
+          <select
+            title="Voice"
+            disabled={disabled}
+            value={elevenVoices}
+            onChange={(e) => void patch({ elevenVoiceId: e.target.value })}
+            style={{ ...selectStyle, flex: 1, opacity: disabled ? 0.4 : 1 }}
+          >
+            {voices.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.blurb ? `${v.name} — ${v.blurb}` : v.name}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <select
+            title="Voice"
+            disabled={disabled}
+            value={settings.ttsVoice}
+            onChange={(e) => void patch({ ttsVoice: e.target.value as TtsVoiceId })}
+            style={{ ...selectStyle, flex: 1, opacity: disabled ? 0.4 : 1 }}
+          >
+            {VOICE_OPTIONS.map((v) => (
+              <option key={v.id} value={v.id}>{v.label}</option>
+            ))}
+          </select>
+        )}
         <button
           type="button"
           onClick={handlePreview}
           style={{ ...ghostBtnStyle, display: "inline-flex", alignItems: "center", gap: 5 }}
-          title="Preview voice"
+          title="Hear this voice"
         >
           <svg width="8" height="10" viewBox="0 0 8 10" fill="none">
             <path d="M1 1l6 4-6 4z" fill={T.ink2} />
@@ -481,21 +653,156 @@ function VoicePicker({
           Preview
         </button>
       </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ fontSize: 11, color: T.ink3, flexShrink: 0 }}>Pace</span>
+        <input
+          type="range"
+          min={0.8}
+          max={1.15}
+          step={0.05}
+          disabled={disabled}
+          value={settings.ttsSpeed}
+          onChange={(e) => void patch({ ttsSpeed: Number(e.target.value) })}
+          style={{ flex: 1, accentColor: T.accent }}
+        />
+        <span
+          style={{
+            fontSize: 11,
+            color: T.ink3,
+            width: 34,
+            textAlign: "right",
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
+          {settings.ttsSpeed.toFixed(2)}×
+        </span>
+      </div>
+
       {previewResult === "pending" && (
         <p style={{ fontSize: 10, color: T.ink3, margin: 0 }}>Testing…</p>
       )}
+      {previewResult === "elevenlabs" && (
+        <p style={{ fontSize: 10, color: "#4F8A2C", margin: 0 }}>✓ ElevenLabs — the good one</p>
+      )}
       {previewResult === "google" && (
-        <p style={{ fontSize: 10, color: "#4F8A2C", margin: 0 }}>✓ Natural voice (Google Chirp 3) — working</p>
+        <p style={{ fontSize: 10, color: "#4F8A2C", margin: 0 }}>✓ Google Chirp 3 — working</p>
       )}
       {previewResult === "openai" && (
-        <p style={{ fontSize: 10, color: "#4F8A2C", margin: 0 }}>✓ Natural voice (OpenAI backup) — working</p>
+        <p style={{ fontSize: 10, color: "#4F8A2C", margin: 0 }}>✓ OpenAI — working</p>
       )}
       {previewResult === "system" && (
-        <p style={{ fontSize: 10, color: "#f59e0b", margin: 0 }}>⚠ System voice only — check your Google or OpenAI key</p>
+        <p style={{ fontSize: 10, color: "#f59e0b", margin: 0 }}>
+          ⚠ Fell back to the robotic system voice — check your keys and network
+        </p>
       )}
       {previewResult === "none" && (
-        <p style={{ fontSize: 10, color: "#ef4444", margin: 0 }}>✗ No audio — check audio permissions or your API key</p>
+        <p style={{ fontSize: 10, color: "#ef4444", margin: 0 }}>
+          ✗ No audio — check audio permissions or your API key
+        </p>
       )}
+      {!keyStatus.elevenlabs && (
+        <p style={{ fontSize: 10, color: T.ink3, margin: 0 }}>
+          Add <code>ELEVENLABS_API_KEY</code> to your .env for the most
+          human-sounding voice and the fastest response.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * What the coach remembers about you, and a way to make it forget. Memory the
+ * user can't see or delete is memory they can't trust.
+ */
+function MemoryList({ ghostBtnStyle }: { ghostBtnStyle: React.CSSProperties }) {
+  const T = useTheme();
+  const [facts, setFacts] = useState<MemoryFact[] | null>(null);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    void api()
+      .memory.list()
+      .then(setFacts)
+      .catch(() => setFacts([]));
+  }, [open]);
+
+  async function forget(id: string) {
+    await api().memory.forget(id);
+    setFacts((prev) => prev?.filter((f) => f.id !== id) ?? null);
+  }
+
+  if (!open) {
+    return (
+      <button type="button" onClick={() => setOpen(true)} style={ghostBtnStyle}>
+        Review what it remembers
+      </button>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      {facts === null && (
+        <p style={{ fontSize: 11, color: T.ink3, margin: 0 }}>Loading…</p>
+      )}
+      {facts?.length === 0 && (
+        <p style={{ fontSize: 11, color: T.ink3, margin: 0 }}>
+          Nothing remembered yet. The coach picks things up as you work.
+        </p>
+      )}
+      {facts?.map((f) => (
+        <div
+          key={f.id}
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 8,
+            padding: "6px 10px",
+            borderRadius: 9,
+            background: lt(0.04),
+            border: `1px solid ${lt(0.07)}`,
+          }}
+        >
+          <span
+            style={{
+              fontSize: 9,
+              fontWeight: 700,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+              color: T.ink3,
+              flexShrink: 0,
+              marginTop: 2,
+              width: 62,
+            }}
+          >
+            {f.kind}
+          </span>
+          <span style={{ flex: 1, fontSize: 11.5, lineHeight: 1.45, color: T.ink2 }}>
+            {f.content}
+          </span>
+          <button
+            type="button"
+            onClick={() => void forget(f.id)}
+            title="Forget this"
+            style={{
+              flexShrink: 0,
+              border: 0,
+              background: "transparent",
+              color: T.ink3,
+              cursor: "pointer",
+              fontSize: 14,
+              lineHeight: 1,
+              padding: 0,
+            }}
+          >
+            ×
+          </button>
+        </div>
+      ))}
+      <button type="button" onClick={() => setOpen(false)} style={ghostBtnStyle}>
+        Done
+      </button>
     </div>
   );
 }

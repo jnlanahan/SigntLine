@@ -2,7 +2,31 @@
 // imports) so it is unit-testable from src/__tests__ — same pattern as
 // speech-chunker.ts and dock-geometry.ts.
 
-import type { HighlightRect, InstructionResponse } from "./types";
+import type { HighlightRect, InstructionResponse, RememberedFact } from "./types";
+
+const VALID_MEMORY_KINDS = new Set([
+  "setup",
+  "preference",
+  "history",
+  "obstacle",
+]);
+
+// A cross-session fact must be short and substantive. Anything longer is the
+// agent narrating rather than recording, and would cost tokens on every tick
+// of every future session.
+const MAX_MEMORY_CHARS = 200;
+
+function parseRemember(raw: unknown): RememberedFact | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const o = raw as Record<string, unknown>;
+  const content = typeof o.content === "string" ? o.content.trim() : "";
+  if (!content || content.length > MAX_MEMORY_CHARS) return null;
+  const kind =
+    typeof o.kind === "string" && VALID_MEMORY_KINDS.has(o.kind)
+      ? (o.kind as RememberedFact["kind"])
+      : "history";
+  return { kind, content };
+}
 
 const VALID_ACTIONS = new Set([
   "instruct",
@@ -63,6 +87,7 @@ export function parseInstruction(
         researchQuery?: string;
         notes?: string;
         highlight?: unknown;
+        remember?: unknown;
       };
       // Modes that don't emit an action (training/teacher) default to
       // "instruct"/"done" so their behavior is unchanged.
@@ -95,6 +120,7 @@ export function parseInstruction(
         researchQuery: (obj.researchQuery ?? "").trim(),
         notes: (obj.notes ?? "").trim(),
         highlight: action === "instruct" ? parseHighlight(obj.highlight) : null,
+        remember: parseRemember(obj.remember),
       };
     } catch {
       // fall through
@@ -115,5 +141,6 @@ export function parseInstruction(
     researchQuery: "",
     notes: "",
     highlight: null,
+    remember: null,
   };
 }

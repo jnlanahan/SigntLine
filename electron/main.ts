@@ -55,10 +55,37 @@ import {
   RateLimitError,
 } from "./claude";
 import { MissingOpenAIKeyError, transcribe } from "./whisper";
-import { speakText, type TtsVoice } from "./openai-tts";
-import { hasGoogleCredentials, speakTextGoogle } from "./google-tts";
+import { hasGoogleCredentials } from "./google-tts";
+import { speak as synthesizeSpeech, warmPhraseCache } from "./tts";
+import { hasElevenLabsKey, listElevenVoices } from "./tts/elevenlabs";
 import type { AppMode, Clarification, CaptureFrame, ConversationTurn, UploadedContext } from "./types";
 import { uIOhook } from "uiohook-napi";
+import { HoldDetector, isPushToTalkCode } from "./hotkey";
+import {
+  addFact,
+  deletePlan,
+  deleteSession,
+  forgetFact,
+  getSession,
+  listFacts,
+  listPlans,
+  listSessions,
+  newId,
+  savePlan,
+  saveSession,
+  touchFacts,
+} from "./db/store";
+import type {
+  MemoryFact,
+  MemoryKind,
+  SessionRecord,
+  TrainingPlan,
+} from "./db/schema";
+import {
+  formatFactsForPrompt,
+  isDuplicateFact,
+  selectFacts,
+} from "./memory-rank";
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || "http://localhost:5173";
 const isDev = !app.isPackaged;
@@ -109,6 +136,10 @@ async function loadKeysFromEnv() {
     await setKey("openai", envVars.OPENAI_API_KEY);
     process.env.OPENAI_API_KEY = envVars.OPENAI_API_KEY;
   }
+  if (envVars.ELEVENLABS_API_KEY) {
+    await setKey("elevenlabs", envVars.ELEVENLABS_API_KEY);
+    process.env.ELEVENLABS_API_KEY = envVars.ELEVENLABS_API_KEY;
+  }
   if (envVars.GOOGLE_PROJECT_ID) process.env.GOOGLE_PROJECT_ID = envVars.GOOGLE_PROJECT_ID;
   if (envVars.GOOGLE_CLIENT_EMAIL) process.env.GOOGLE_CLIENT_EMAIL = envVars.GOOGLE_CLIENT_EMAIL;
   if (envVars.GOOGLE_PRIVATE_KEY) process.env.GOOGLE_PRIVATE_KEY = envVars.GOOGLE_PRIVATE_KEY;
@@ -127,6 +158,9 @@ let redockTimer: ReturnType<typeof setTimeout> | null = null;
 let tray: Tray | null = null;
 let glowAdjusting = false;
 let inputDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+// Push-to-talk edge detector. Module-level so changing the bound key can reset
+// it — otherwise rebinding mid-hold would latch the mic open forever.
+const pttDetector = new HoldDetector();
 
 // Manual window dragging. CSS -webkit-app-region: drag is unreliable for
 // transparent frameless windows on Windows, so the renderer reports
@@ -547,6 +581,26 @@ function createWindow() {
   mainWindow.on("moved", saveBounds);
   mainWindow.on("resized", saveBounds);
 
+  // Renderer errors used to vanish into a console nobody has open — a React
+  // crash showed up as a blank panel with no trace anywhere. Route warnings
+  // and errors into the same diagnostic log as everything else.
+  mainWindow.webContents.on("console-message", (event) => {
+    // Electron 4x+ passes a single event object; `level` is a string here.
+    const { level, message, lineNumber, sourceId } = event;
+    if (level !== "warning" && level !== "error") return; // debug/info is noise
+    const where = sourceId ? ` (${path.basename(sourceId)}:${lineNumber})` : "";
+    logLine(`[renderer:${level}] ${message}${where}`);
+  });
+  mainWindow.webContents.on("render-process-gone", (_e, details) => {
+    logLine(`[renderer] process gone: ${details.reason} (exit ${details.exitCode})`);
+  });
+  mainWindow.webContents.on("did-fail-load", (_e, code, desc, url) => {
+    logLine(`[renderer] failed to load ${url}: ${desc} (${code})`);
+  });
+  mainWindow.webContents.on("unresponsive", () => {
+    logLine("[renderer] became unresponsive");
+  });
+
   if (isDev) {
     void mainWindow.loadURL(DEV_URL);
   } else {
@@ -649,6 +703,11 @@ app.whenReady().then(async () => {
     void setGlowAdjust(false); // safety: never stuck in interactive mode from a prior session
   });
 
+  // Pre-synthesize the coach's fixed phrases (thinking fillers, wrap-ups) so
+  // the first one of the session plays instantly. Unawaited — launch must not
+  // wait on the speech provider, and a failure here is silently harmless.
+  void warmPhraseCache();
+
   // Global input listener — debounced so rapid typing/clicking doesn't spam ticks
   function scheduleInputTick() {
     if (inputDebounceTimer) clearTimeout(inputDebounceTimer);
@@ -659,6 +718,22 @@ app.whenReady().then(async () => {
   }
   uIOhook.on("click", scheduleInputTick);
   uIOhook.on("keyup", scheduleInputTick);
+
+  // Hold-to-talk. Watched globally because the user is looking at the app
+  // being coached, not at SightLine — a focus-scoped shortcut would never
+  // fire. The detector collapses OS auto-repeat down to one press edge.
+  uIOhook.on("keydown", (e) => {
+    const key = loadSettings().pushToTalkKey;
+    if (pttDetector.keyDown(isPushToTalkCode(key, e.keycode)) === "press") {
+      mainWindow?.webContents.send("voice:ptt", { down: true });
+    }
+  });
+  uIOhook.on("keyup", (e) => {
+    const key = loadSettings().pushToTalkKey;
+    if (pttDetector.keyUp(isPushToTalkCode(key, e.keycode)) === "release") {
+      mainWindow?.webContents.send("voice:ptt", { down: false });
+    }
+  });
   // Safety net for manual dragging: if the renderer's pointerup is ever
   // missed, the global mouse-up still ends the drag.
   uIOhook.on("mouseup", stopWindowDrag);
@@ -717,6 +792,14 @@ function registerIpc() {
       if (mainWindow && typeof patch.opacity === "number" && !isDocked()) {
         mainWindow.setOpacity(next.opacity);
       }
+      // Rebinding push-to-talk while the old key is held would otherwise leave
+      // the detector latched down and the mic open with no way to release it.
+      if ("pushToTalkKey" in patch && next.pushToTalkKey !== prev.pushToTalkKey) {
+        if (pttDetector.isDown()) {
+          pttDetector.reset();
+          mainWindow?.webContents.send("voice:ptt", { down: false });
+        }
+      }
       // Toggling "dock to the side" from Settings docks/undocks live so the
       // change is visible immediately, not on next launch.
       if ("dockEnabled" in patch && next.dockEnabled !== prev.dockEnabled) {
@@ -756,6 +839,7 @@ function registerIpc() {
     anthropic: await hasKey("anthropic"),
     openai: await hasKey("openai"),
     google: hasGoogleCredentials(),
+    elevenlabs: hasElevenLabsKey() || (await hasKey("elevenlabs")),
   }));
 
   ipcMain.handle(
@@ -853,6 +937,8 @@ function registerIpc() {
         secondsSinceLastSpoke?: number;
         stalled?: boolean;
         sessionJustStarted?: boolean;
+        screenChanged?: boolean;
+        recalledMemory?: string;
       },
     ) => {
       const startedAt = Date.now();
@@ -1074,51 +1160,22 @@ function registerIpc() {
     },
   );
 
+  // Speech synthesis. The whole provider chain, cache, timeouts, and fallback
+  // policy live in ./tts — this handler is just the IPC surface.
   ipcMain.handle(
     "tts:speak",
-    async (
-      _e: IpcMainInvokeEvent,
-      payload: { text: string; voice?: TtsVoice },
-    ) => {
-      // Fallback chain: Google Chirp 3 → OpenAI → error envelope. The
-      // renderer only reaches the system voice when both cloud engines fail.
-      // Each engine is wrapped in a hard timeout so a single wedged request
-      // can't permanently silence TTS — a slow Google call falls through to
-      // OpenAI, a slow OpenAI call surfaces an error the renderer can log.
-      let googleErr = "";
-      if (hasGoogleCredentials()) {
-        try {
-          const buffer = await withTimeout(
-            speakTextGoogle(payload.text, payload.voice),
-            10_000,
-            "google_tts_timeout",
-          );
-          return { audioBase64: buffer.toString("base64"), engine: "google" as const };
-        } catch (err) {
-          googleErr = err instanceof Error ? err.message : String(err);
-          logLine(`[tts] Google TTS failed, trying OpenAI: ${googleErr}`);
-        }
-      }
-      try {
-        const buffer = await withTimeout(
-          speakText(payload.text, { voice: payload.voice }),
-          15_000,
-          "openai_tts_timeout",
-        );
-        return { audioBase64: buffer.toString("base64"), engine: "openai" as const };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (!googleErr && msg.includes("missing_openai_key")) {
-          return { __error: "missing_openai_key" } as const;
-        }
-        logLine(`[tts] all engines failed: ${googleErr} / ${msg}`);
-        return {
-          __error: "request_failed",
-          message: [googleErr, msg].filter(Boolean).join(" / "),
-        } as const;
-      }
+    async (_e: IpcMainInvokeEvent, payload: { text: string }) => {
+      const result = await synthesizeSpeech(payload.text);
+      if ("__error" in result) return result;
+      logLine(
+        `[tts] ${result.engine}${result.cached ? " (cached)" : ""} ${result.ms}ms ` +
+          `for "${payload.text.slice(0, 40)}"`,
+      );
+      return result;
     },
   );
+
+  ipcMain.handle("tts:list-voices", () => listElevenVoices());
 
   ipcMain.handle(
     "overlay:show-glow",
@@ -1236,6 +1293,98 @@ function registerIpc() {
   ipcMain.handle("dock:state", () => ({
     docked: isDocked(),
     rect: getDockRectDip()?.rect ?? null,
+  }));
+
+  // ── History, memory, and saved plans ──
+  // The store is the seam for the eventual move to Neon: these handlers hold
+  // no persistence logic of their own, only the shapes the renderer needs.
+
+  ipcMain.handle("history:list", () => listSessions());
+
+  ipcMain.handle("history:get", (_e, payload: { id: string }) =>
+    getSession(payload.id),
+  );
+
+  ipcMain.handle("history:save", (_e, record: SessionRecord) => {
+    if (!loadSettings().historyEnabled) return { saved: false };
+    const saved = saveSession(record);
+    if (saved) {
+      logLine(
+        `[history] saved session ${record.id} (${record.mode}, ${record.turns.length} turns, ` +
+          `${record.steps.filter((s) => s.state === "completed").length} steps done, ` +
+          `$${record.costUsd.toFixed(4)})`,
+      );
+    }
+    return { saved };
+  });
+
+  ipcMain.handle("history:delete", (_e, payload: { id: string }) => ({
+    deleted: deleteSession(payload.id),
+  }));
+
+  // Recall: rank what we know against this goal and return both the prompt
+  // text and the ids, so the renderer can show the user what was recalled.
+  ipcMain.handle("memory:recall", (_e, payload: { goal: string }) => {
+    if (!loadSettings().memoryEnabled) return { text: "", facts: [] };
+    const now = Date.now();
+    const selected = selectFacts(listFacts(), payload.goal, now);
+    touchFacts(
+      selected.map((f) => f.id),
+      now,
+    );
+    logLine(
+      `[memory] recalled ${selected.length} fact(s) for "${payload.goal.slice(0, 60)}"`,
+    );
+    return { text: formatFactsForPrompt(selected), facts: selected };
+  });
+
+  ipcMain.handle(
+    "memory:add",
+    (
+      _e,
+      payload: { kind: MemoryKind; content: string; sessionId: string | null },
+    ) => {
+      if (!loadSettings().memoryEnabled) return { added: false };
+      const existing = listFacts();
+      // The agent re-notices the same fact across turns and sessions; storing
+      // each phrasing separately would crowd out everything else.
+      if (isDuplicateFact(payload.content, existing)) {
+        return { added: false, reason: "duplicate" as const };
+      }
+      const now = Date.now();
+      const fact: MemoryFact = {
+        id: newId("fact"),
+        userId: null,
+        kind: payload.kind,
+        content: payload.content,
+        sourceSessionId: payload.sessionId,
+        createdAt: now,
+        lastUsedAt: now,
+        useCount: 0,
+        archived: false,
+      };
+      addFact(fact);
+      logLine(`[memory] learned (${fact.kind}): ${fact.content}`);
+      return { added: true, fact };
+    },
+  );
+
+  ipcMain.handle("memory:list", () =>
+    listFacts().filter((f) => !f.archived),
+  );
+
+  ipcMain.handle("memory:forget", (_e, payload: { id: string }) => ({
+    forgotten: forgetFact(payload.id),
+  }));
+
+  ipcMain.handle("plans:list", () => listPlans());
+
+  ipcMain.handle("plans:save", (_e, plan: TrainingPlan) => ({
+    saved: savePlan(plan),
+  }));
+
+  ipcMain.handle("plans:delete", (_e, payload: { id: string }) => ({
+    deleted: deletePlan(payload.id),
   }));
 
   ipcMain.handle(
