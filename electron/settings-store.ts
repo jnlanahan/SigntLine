@@ -41,11 +41,26 @@ function settingsPath(): string {
   return path.join(app.getPath("userData"), "settings.json");
 }
 
+// Voice ids that shipped as a default but turned out to be unusable on some
+// plans, mapped to nothing — anyone still pointing at one gets moved to the
+// current default. Without this, a user who ran an earlier build keeps the bad
+// id in settings.json forever and sees an empty voice dropdown.
+const RETIRED_VOICE_IDS = new Set([
+  // Rachel — a Voice Library voice, which free plans cannot use via the API.
+  "21m00Tcm4TlvDq8ikWAM",
+  // Charlotte — same.
+  "XB0fDUnXU5powFXDhCwa",
+]);
+
 export function loadSettings(): Settings {
   try {
     const raw = fs.readFileSync(settingsPath(), "utf-8");
     const parsed = JSON.parse(raw) as Partial<Settings>;
-    return { ...DEFAULTS, ...parsed };
+    const merged = { ...DEFAULTS, ...parsed };
+    if (RETIRED_VOICE_IDS.has(merged.elevenVoiceId)) {
+      merged.elevenVoiceId = DEFAULTS.elevenVoiceId;
+    }
+    return merged;
   } catch {
     return { ...DEFAULTS };
   }

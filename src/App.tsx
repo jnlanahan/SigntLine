@@ -831,6 +831,9 @@ function PanelHeader({
 }) {
   const T = useTheme();
   const pulses   = status === "watching" || status === "thinking";
+  // Docked, the whole panel is a ~400px strip. At the floating size these
+  // controls overflow the header and pile on top of the status text.
+  const btn = docked ? 30 : 36;
   const patchSettings = useSettings((s) => s.patch);
   const selectedDisplayId = useSettings((s) => s.settings?.selectedDisplayId ?? null);
   const selectedSourceId = useSettings((s) => s.settings?.selectedSourceId ?? null);
@@ -871,17 +874,28 @@ function PanelHeader({
         position: "absolute", left: 14, right: 14, bottom: 0, height: 2,
         borderRadius: 2, pointerEvents: "none", ...lineStyle,
       }} />
-      <Logo size={38} radius={11} />
+      <Logo size={docked ? 30 : 38} radius={docked ? 9 : 11} />
 
-      <div style={{ flex: 1, minWidth: 0 }}>
+      {/* Docked, this is a ~400px strip and the wordmark, status, mode label
+          and nine buttons cannot all fit — they used to overlap into an
+          unreadable pile. Docked drops the wordmark (the logo is right there)
+          and puts status on one clipped line. */}
+      <div style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
+        {!docked && (
+          <div style={{
+            fontFamily: T.display, fontSize: 19, fontWeight: 650,
+            letterSpacing: "-0.01em", lineHeight: 1.1, color: T.ink,
+            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+          }}>
+            SightLine
+          </div>
+        )}
         <div style={{
-          fontFamily: T.display, fontSize: 19, fontWeight: 650,
-          letterSpacing: "-0.01em", lineHeight: 1.1, color: T.ink,
-          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+          marginTop: docked ? 0 : 3,
+          display: "flex", alignItems: "center", gap: 6,
+          fontSize: 11, color: T.ink3,
+          minWidth: 0, whiteSpace: "nowrap",
         }}>
-          SightLine
-        </div>
-        <div style={{ marginTop: 3, display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: T.ink3 }}>
           {/* Status dot */}
           <span style={{ position: "relative", display: "inline-flex", width: 7, height: 7, flexShrink: 0 }}>
             <span style={{ position: "absolute", inset: 0, borderRadius: "50%", background: dotColor }} />
@@ -893,9 +907,11 @@ function PanelHeader({
               }} />
             )}
           </span>
-          <span>{statusText}</span>
-          {mode && (
-            <span style={{ color: T.ink3 }}>
+          <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
+            {statusText}
+          </span>
+          {mode && !docked && (
+            <span style={{ color: T.ink3, flexShrink: 0 }}>
               ·&nbsp;<span style={{ color: T.accentText, fontWeight: 600 }}>{MODE_LABELS[mode]}</span>
             </span>
           )}
@@ -904,14 +920,23 @@ function PanelHeader({
 
       {showSpinner && <Spinner size={24} />}
 
-      <div className="no-drag" style={{ display: "flex", alignItems: "center", gap: 2 }}>
-        <CtrlBtn title={ttsEnabled ? "Voice on" : "Voice off"} onClick={onToggleVoice}>
+      <div className="no-drag" style={{ display: "flex", alignItems: "center", gap: 1, flexShrink: 0 }}>
+        <CtrlBtn
+          size={btn}
+          title={ttsEnabled ? "Voice on — click to mute the coach" : "Muted — click to turn the coach's voice on"}
+          onClick={onToggleVoice}
+          color={ttsEnabled ? undefined : "#C22F2F"}
+        >
           {ttsEnabled ? <SpeakerOnIcon /> : <SpeakerOffIcon />}
         </CtrlBtn>
-        <CtrlBtn title="Adjust capture area" onClick={onAdjustCapture}>
-          <CropIcon />
-        </CtrlBtn>
+        {/* Capture area lives in Settings too; docked there is no room for it. */}
+        {!docked && (
+          <CtrlBtn size={btn} title="Adjust capture area" onClick={onAdjustCapture}>
+            <CropIcon />
+          </CtrlBtn>
+        )}
         <CtrlBtn
+          size={btn}
           title={docked ? "Undock — float the window" : "Dock to the side of the screen"}
           onClick={onToggleDock}
         >
@@ -919,6 +944,7 @@ function PanelHeader({
         </CtrlBtn>
         {targets.length > 1 && (
           <CtrlBtn
+            size={btn}
             title={`Watching: ${
               targets.find(
                 (t) =>
@@ -943,19 +969,19 @@ function PanelHeader({
             <IMonitor />
           </CtrlBtn>
         )}
-        <CtrlBtn title="Settings" onClick={onOpenSettings}>
+        <CtrlBtn size={btn} title="Settings" onClick={onOpenSettings}>
           <IGear />
         </CtrlBtn>
 
         {/* Standard window controls: minimize · collapse · close */}
-        <span aria-hidden style={{ width: 1, height: 22, background: lt(0.12), margin: "0 6px", flexShrink: 0 }} />
-        <WindowBtn title="Minimize" onClick={onMinimize}>
+        <span aria-hidden style={{ width: 1, height: 20, background: lt(0.12), margin: docked ? "0 3px" : "0 6px", flexShrink: 0 }} />
+        <WindowBtn size={btn} title="Minimize" onClick={onMinimize}>
           <IMinimize />
         </WindowBtn>
-        <WindowBtn title="Collapse to compact bar" onClick={onCollapse}>
+        <WindowBtn size={btn} title="Collapse to compact bar" onClick={onCollapse}>
           <ChevronDownIcon />
         </WindowBtn>
-        <WindowBtn title="Close SightLine" onClick={onQuit} danger>
+        <WindowBtn size={btn} title="Close SightLine" onClick={onQuit} danger>
           <IClose />
         </WindowBtn>
       </div>
@@ -970,11 +996,13 @@ function WindowBtn({
   title,
   onClick,
   danger,
+  size = 32,
 }: {
   children: React.ReactNode;
   title: string;
   onClick(): void;
   danger?: boolean;
+  size?: number;
 }) {
   const T = useTheme();
   return (
@@ -984,13 +1012,13 @@ function WindowBtn({
       title={title}
       onClick={onClick}
       style={{
-        width: 32, height: 32, flexShrink: 0,
+        width: size, height: size, flexShrink: 0,
         display: "grid", placeItems: "center",
         borderRadius: 9, cursor: "pointer",
         background: danger ? "rgba(219,59,59,0.1)" : lt(0.05),
         border: `1px solid ${danger ? "rgba(219,59,59,0.35)" : lt(0.1)}`,
         color: danger ? "#C22F2F" : T.ink2,
-        marginLeft: 3,
+        marginLeft: 2,
       }}
     >
       {children}
@@ -1042,13 +1070,39 @@ function ControlBar({
         flexShrink: 0,
       }}
     >
-      <CtrlBtn
-        title={ttsEnabled ? "Voice on — click to mute" : "Voice off — click to enable"}
-        onClick={onToggleVoice}
-        color={ttsEnabled ? T.accentText : undefined}
-      >
-        <IMic c={ttsEnabled ? T.accentText : "currentColor"} />
-      </CtrlBtn>
+      {/* The coach's voice. Deliberately NOT a microphone icon: a mic means
+          input, this controls output, and the hold-to-talk mic sits directly
+          above it in the composer. Muted state is a labelled red pill rather
+          than a tinted icon — an app that has silently stopped talking must
+          say so, not hint at it. */}
+      {ttsEnabled ? (
+        <CtrlBtn
+          title="Voice on — click to mute the coach"
+          onClick={onToggleVoice}
+          color={T.accentText}
+        >
+          <SpeakerOnIcon />
+        </CtrlBtn>
+      ) : (
+        <button
+          type="button"
+          className="no-drag"
+          onClick={onToggleVoice}
+          title="The coach is muted — click to turn its voice back on"
+          style={{
+            display: "inline-flex", alignItems: "center", gap: 5,
+            height: 30, padding: "0 9px", borderRadius: 9,
+            border: "1px solid rgba(219,59,59,0.45)",
+            background: "rgba(219,59,59,0.12)",
+            color: "#C22F2F", cursor: "pointer",
+            fontSize: 10.5, fontWeight: 700, letterSpacing: "0.04em",
+            fontFamily: "inherit", flexShrink: 0,
+          }}
+        >
+          <SpeakerOffIcon />
+          MUTED
+        </button>
+      )}
 
       <CtrlBtn
         title={attachedCount > 0 ? `${attachedCount} file(s) attached — attach more` : "Attach file"}
@@ -1334,11 +1388,11 @@ function CollapsedBar({
 
       <div className="no-drag" style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 0 }}>
         <CtrlBtn
-          title={ttsEnabled ? "Voice on — click to mute" : "Voice off — click to enable"}
+          title={ttsEnabled ? "Voice on — click to mute the coach" : "Muted — click to turn the coach's voice on"}
           onClick={onToggleVoice}
-          color={ttsEnabled ? T.accentText : undefined}
+          color={ttsEnabled ? T.accentText : "#C22F2F"}
         >
-          <IMic c={ttsEnabled ? T.accentText : "currentColor"} />
+          {ttsEnabled ? <SpeakerOnIcon /> : <SpeakerOffIcon />}
         </CtrlBtn>
         <button
           className="no-drag"

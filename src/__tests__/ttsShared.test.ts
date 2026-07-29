@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_ELEVEN_VOICE_ID,
+  ELEVEN_VOICE_PRESETS,
   COMPLETION_PHRASES,
   MAX_TTS_CHARS,
   THINKING_PHRASES,
@@ -123,5 +125,46 @@ describe("clampTtsText", () => {
 
   it("never returns an empty string for non-empty input", () => {
     expect(clampTtsText("x".repeat(2000)).length).toBeGreaterThan(0);
+  });
+});
+
+describe("ElevenLabs voice presets", () => {
+  // Voices from the shared Voice Library return HTTP 402 on free plans and
+  // instantly-cloned voices return 401. Shipping either as a preset — and
+  // especially as the DEFAULT — means a new user's first experience is the
+  // robotic system voice. Every id below was verified against a live free-tier
+  // account; keep that true when editing this list.
+  const LIBRARY_ONLY_IDS = new Set([
+    "21m00Tcm4TlvDq8ikWAM", // Rachel
+    "XB0fDUnXU5powFXDhCwa", // Charlotte
+  ]);
+
+  it("ships a default that works on every plan", () => {
+    expect(LIBRARY_ONLY_IDS.has(DEFAULT_ELEVEN_VOICE_ID)).toBe(false);
+  });
+
+  it("has a default that is one of the presets", () => {
+    expect(ELEVEN_VOICE_PRESETS.map((v) => v.id)).toContain(
+      DEFAULT_ELEVEN_VOICE_ID,
+    );
+  });
+
+  it("contains no plan-gated voices at all", () => {
+    for (const preset of ELEVEN_VOICE_PRESETS) {
+      expect(LIBRARY_ONLY_IDS.has(preset.id)).toBe(false);
+    }
+  });
+
+  it("has unique ids and non-empty names", () => {
+    const ids = ELEVEN_VOICE_PRESETS.map((v) => v.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const p of ELEVEN_VOICE_PRESETS) {
+      expect(p.name.length).toBeGreaterThan(0);
+      expect(p.blurb.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("offers a range of voices to choose from", () => {
+    expect(ELEVEN_VOICE_PRESETS.length).toBeGreaterThanOrEqual(6);
   });
 });

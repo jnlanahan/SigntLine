@@ -87,9 +87,15 @@ export async function speakTextElevenLabs(
 
   if (!resp.ok) {
     const detail = await resp.text().catch(() => "");
-    // A bad voice id is recoverable — remember it and let the next call use
-    // whatever the account actually has.
-    if (resp.status === 404 || resp.status === 422) deadVoices.add(voiceId);
+    // A voice this account can't use is recoverable — remember it and let the
+    // next call fall back to one the account actually has.
+    //   404/422 — the id doesn't exist
+    //   402     — a Voice Library voice on a plan that doesn't include them
+    //   401     — an instantly-cloned voice on a plan that doesn't include them
+    // The last two are the common ones on free accounts, and without them a
+    // single unusable default voice silently downgrades the whole session to
+    // the system voice instead of just picking a different ElevenLabs voice.
+    if ([401, 402, 404, 422].includes(resp.status)) deadVoices.add(voiceId);
     throw new Error(
       `elevenlabs_http_${resp.status}${detail ? `: ${detail.slice(0, 200)}` : ""}`,
     );
@@ -154,9 +160,16 @@ async function accountFallbackVoice(key: string): Promise<string | null> {
     });
     if (!resp.ok) return null;
     const data = (await resp.json()) as {
-      voices?: Array<{ voice_id?: string }>;
+      voices?: Array<{ voice_id?: string; category?: string }>;
     };
-    const first = data.voices?.find((v) => v.voice_id && !deadVoices.has(v.voice_id));
+    const usable = (data.voices ?? []).filter(
+      (v) => v.voice_id && !deadVoices.has(v.voice_id),
+    );
+    // Prefer a premade voice: those work on every plan. Cloned and library
+    // voices are plan-gated, so picking one as the fallback can fail for the
+    // exact same reason the original voice did.
+    const first =
+      usable.find((v) => v.category === "premade") ?? usable[0];
     resolvedFallbackVoice = first?.voice_id ?? null;
     return resolvedFallbackVoice;
   } catch {

@@ -91,11 +91,15 @@ export function Check({ s = 11, c }: { s?: number; c?: string }) {
   return <svg width={s} height={s} viewBox="0 0 12 12" fill="none"><path d="M2 6.2 L5 9 L10 3" stroke={c || T.green} strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" /></svg>;
 }
 
-export function CtrlBtn({ children, title, onClick, color }: { children: React.ReactNode; title?: string; onClick?: () => void; color?: string }) {
+export function CtrlBtn({ children, title, onClick, color, size = 36 }: { children: React.ReactNode; title?: string; onClick?: () => void; color?: string; size?: number }) {
   const T = useTheme();
   return (
     <button title={title} onClick={onClick} className="sl-ctrl" style={{
-      width: 36, height: 36, border: 0, borderRadius: 11, background: "transparent", color: color || T.ink2,
+      // `size` exists for the docked sidebar, which is a ~400px strip: at the
+      // full 36px these buttons overflow the header and collide with the
+      // status text.
+      width: size, height: size, flexShrink: 0,
+      border: 0, borderRadius: Math.round(size * 0.3), background: "transparent", color: color || T.ink2,
       display: "grid", placeItems: "center", cursor: "pointer", transition: "background 150ms, color 150ms",
     }}>{children}</button>
   );

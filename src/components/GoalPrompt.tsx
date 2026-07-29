@@ -113,7 +113,14 @@ export function GoalPrompt({ mode, onStart, onBack }: Props) {
       const result = await api().claude.getSessionPlan({ mode, goal, clarifications, screenshot });
       if ("overview" in result) {
         setPlan(result);
-        if (result.overview) speak(result.overview);
+        // Respect the mute. This used to speak unconditionally, which made a
+        // muted app talk exactly once — at session start — and then go silent
+        // for the rest of the session. That reads as "it won't read the steps
+        // out loud" rather than "the voice is off", which is why the real
+        // cause went unnoticed for so long.
+        if (result.overview && useSettings.getState().settings?.ttsEnabled) {
+          speak(result.overview);
+        }
       }
     } catch {
       // fail-safe: start without plan

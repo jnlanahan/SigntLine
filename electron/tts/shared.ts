@@ -130,15 +130,25 @@ export interface VoicePreset {
   blurb: string;
 }
 
+// IMPORTANT: these must all be **premade** voices, which every account can use.
+// Voices from the shared Voice Library return HTTP 402 on free plans ("Free
+// users cannot use library voices via the API"), and instantly-cloned voices
+// return 401 — so a library voice as the shipped default means a new user's
+// first experience is silence falling back to the robotic system voice.
+// Verified against a live free-tier account: every id below synthesizes.
 export const ELEVEN_VOICE_PRESETS: readonly VoicePreset[] = [
-  { id: "21m00Tcm4TlvDq8ikWAM", name: "Rachel", blurb: "Warm, even, unhurried" },
-  { id: "EXAVITQu4vr4xnSDxMaL", name: "Sarah", blurb: "Soft and clear" },
-  { id: "XB0fDUnXU5powFXDhCwa", name: "Charlotte", blurb: "Relaxed, friendly" },
-  { id: "JBFqnCBsd6RMkjVDRZzb", name: "George", blurb: "Warm British male" },
-  { id: "nPczCjzI2devNBz1zQrb", name: "Brian", blurb: "Deep, steady male" },
-  { id: "onwK4e9ZLuTAKqWW03F9", name: "Daniel", blurb: "Calm British male" },
+  { id: "EXAVITQu4vr4xnSDxMaL", name: "Sarah", blurb: "Mature, reassuring, confident" },
+  { id: "Xb7hH8MSUJpSbSDYk0k2", name: "Alice", blurb: "Clear, engaging educator" },
+  { id: "XrExE9yKIg1WjnnlVkGX", name: "Matilda", blurb: "Knowledgeable, professional" },
+  { id: "SAz9YHcvj6GT2YYXdXww", name: "River", blurb: "Relaxed, neutral, informative" },
+  { id: "cjVigY5qzO86Huf0OWal", name: "Eric", blurb: "Smooth, trustworthy" },
+  { id: "JBFqnCBsd6RMkjVDRZzb", name: "George", blurb: "Warm, captivating storyteller" },
+  { id: "nPczCjzI2devNBz1zQrb", name: "Brian", blurb: "Deep, resonant, comforting" },
+  { id: "onwK4e9ZLuTAKqWW03F9", name: "Daniel", blurb: "Steady broadcaster" },
 ];
 
+// Sarah: reassuring and even-paced, which is what someone being walked through
+// a problem needs. Premade, so it works on every plan including free.
 export const DEFAULT_ELEVEN_VOICE_ID = ELEVEN_VOICE_PRESETS[0].id;
 
 // Flash v2.5 is the low-latency model (~75 ms model time-to-first-byte). The
