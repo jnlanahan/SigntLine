@@ -3,6 +3,40 @@ import type { MemoryKind } from "./db/schema";
 
 export type AppMode = "tech_support" | "training" | "teacher";
 
+/**
+ * When an agent wants to be ticked. Declared by the agent (electron/agents/),
+ * executed by the renderer's loop (src/hooks/useSessionLoop.ts) — the agent
+ * owns the cadence, shared infrastructure owns the scheduler.
+ *
+ * Crosses the IPC bridge via `agent:describe`, so it lives here with the other
+ * shared types rather than in the harness.
+ */
+export interface LoopPolicy {
+  /** Minimum time between model calls, stamped when the call is made. */
+  minCallSpacingMs: number;
+  /** Backstop auto-poll interval. 0 = no auto-poll (teacher). */
+  normalIntervalMs: number;
+  /** Backstop once the screen has been still a long time. */
+  slowIntervalMs: number;
+  /** Silence after last input before triggering a tick. 0 = disabled. */
+  quietPeriodMs: number;
+  /** Whether ticks may proceed with no screen change so the agent can check in. */
+  stallEnabled: boolean;
+  /**
+   * True: skip the call unless the screen changed or a follow-up is pending.
+   * False (teacher): fire ONLY when a follow-up is pending.
+   */
+  requireScreenChange: boolean;
+}
+
+/** What `agent:describe` returns — everything the renderer needs to run a loop. */
+export interface AgentDescriptor {
+  id: AppMode;
+  loop: LoopPolicy;
+  skills: string[];
+  tools: string[];
+}
+
 /** A durable fact the agent asked to remember beyond this session. */
 export interface RememberedFact {
   kind: MemoryKind;
@@ -92,6 +126,9 @@ export interface InstructionResponse {
   // A fact worth carrying into FUTURE sessions, distinct from "notes" (which
   // is a scratchpad for this session only). Null on most turns.
   remember: RememberedFact | null;
+  // Mid-turn tools the agent called before ending its turn, in call order.
+  // Diagnostic only — the effects have already been applied.
+  toolsUsed?: string[];
   // Token accounting for this call. Attached by claude.ts after parsing (the
   // parser itself stays pure); absent when the call never reached the API.
   usage?: TokenUsage;
@@ -282,6 +319,7 @@ export type IpcChannel =
   | "files:pick-context"
   | "claude:next-instruction"
   | "claude:get-session-plan"
+  | "agent:describe"
   | "whisper:transcribe"
   | "window:set-opacity"
   | "window:set-ignore-mouse"

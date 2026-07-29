@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSession } from "../store/session";
 import { useSettings } from "../store/settings";
 import { api } from "../lib/api";
@@ -16,27 +16,32 @@ import {
   type SpeechStream,
 } from "./useTts";
 import { useQuietPeriod } from "./useQuietPeriod";
+import { ensureAgentPolicy } from "../lib/agentPolicy";
 import type { AppMode, StepPace } from "../lib/api";
 
 const RETRY_DELAY_MS = 10_000;
 
-// Tech-support pacing. The loop looks at the screen often; Claude decides
-// each tick whether to speak ("instruct"/"acknowledge"/"check_in"/"done")
-// or stay silent ("wait"), so frequent ticks don't rush the user.
+// How long the loop waits before retrying after it could not get a policy
+// from the agent. Only reachable if the main process is unhealthy.
+const POLICY_RETRY_MS = 5_000;
+
+// Screen still this long → use the agent's slow backstop instead of its
+// normal one. This is the scheduler's own hysteresis, not the agent's
+// cadence, so it stays here rather than crossing the bridge.
+const SLOW_AFTER_MS = 120_000;
+
+// The polling cadence itself now belongs to each agent (electron/agents/*.ts
+// → Agent.loop), fetched once per session via agent:describe.
 //
-// Looking more often is NOT the same as talking more often — "wait" is the
-// model's most common action by design, and speech is separately gated on
-// isSpeaking()/waitForSpeechEnd(). So these values buy responsiveness without
-// buying interruptions: the cost of a tighter quiet period is tokens, and the
-// budget guardrails (electron/usage.ts) are what bound that.
-const TS_MIN_CALL_SPACING_MS = 3_000;
-const TS_BACKSTOP_MS = 15_000;
-const TS_SLOW_BACKSTOP_MS = 30_000;
-const TS_SLOW_AFTER_MS = 120_000; // screen still this long → slow backstop
-// Silence after input before a check. This is the dominant term in "why did
-// it take so long to react after I clicked something" — every millisecond
-// here is felt directly by the user.
-const TS_QUIET_PERIOD_MS = 1_500;
+// What has NOT changed is why aggressive polling is safe: looking more often
+// is NOT the same as talking more often. The agent's most common turn by a
+// wide margin is `wait`, and speech is separately gated on
+// isSpeaking()/waitForSpeechEnd(). A tighter quiet period costs tokens, not
+// interruptions, and the budget guardrails (electron/usage.ts) bound that.
+//
+// The upper bound on how long a tick can take is also the agent's now: a turn
+// may spend up to Agent.maxToolIterations round trips looking things up
+// before it speaks. inFlightRef keeps those from overlapping.
 
 // How long the screen must be still before a stall tick (which lets Claude
 // check in), scaled by the expected pace of the current step.
@@ -51,54 +56,6 @@ const CHECK_IN_REPEAT_MS = 60_000;
 // digression call was probably wrong (e.g. watching the wrong monitor), so
 // let a check-in through rather than staying silent forever.
 const DIVERTED_STALL_MS = 120_000;
-
-type ModeConfig = {
-  // Minimum time between Claude calls, stamped when the call is made.
-  minCallSpacingMs: number;
-  // Backstop auto-poll interval (ms). 0 = no auto-poll (teacher mode).
-  normalIntervalMs: number;
-  // Backstop when the screen has been still for a long time.
-  slowIntervalMs: number;
-  // ms of silence after last input before triggering a check. 0 = disabled.
-  quietPeriodMs: number;
-  // Whether ticks may proceed without a screen change to let Claude check in.
-  stallEnabled: boolean;
-  // If true, skip the Claude call unless screen changed or follow-up pending.
-  // If false (teacher), ONLY fire when there's a pending follow-up.
-  requireScreenChange: boolean;
-};
-
-function getModeConfig(mode: AppMode | null): ModeConfig {
-  switch (mode) {
-    case "training":
-      return {
-        minCallSpacingMs: 10_000,
-        normalIntervalMs: 60_000,
-        slowIntervalMs: 60_000,
-        quietPeriodMs: 0, // no input trigger in training
-        stallEnabled: false,
-        requireScreenChange: true,
-      };
-    case "teacher":
-      return {
-        minCallSpacingMs: 2_000,
-        normalIntervalMs: 0, // no auto-poll — conversation-driven only
-        slowIntervalMs: 0,
-        quietPeriodMs: 0,
-        stallEnabled: false,
-        requireScreenChange: false,
-      };
-    default: // tech_support
-      return {
-        minCallSpacingMs: TS_MIN_CALL_SPACING_MS,
-        normalIntervalMs: TS_BACKSTOP_MS,
-        slowIntervalMs: TS_SLOW_BACKSTOP_MS,
-        quietPeriodMs: TS_QUIET_PERIOD_MS,
-        stallEnabled: true,
-        requireScreenChange: true,
-      };
-  }
-}
 
 export function useSessionLoop(onNeedsApiKey: () => void) {
   const inFlightRef = useRef(false);
@@ -151,7 +108,13 @@ export function useSessionLoop(onNeedsApiKey: () => void) {
         return;
       }
 
-      const cfg = getModeConfig(state.mode);
+      // The agent's cadence, fetched once per session. Without it we have no
+      // basis for any timing decision below, so skip rather than guess.
+      const cfg = await ensureAgentPolicy(state.mode ?? "tech_support");
+      if (!cfg) {
+        log(`tick(${reason}) skipped: agent policy unavailable`);
+        return;
+      }
 
       // Minimum spacing between Claude calls. Stamped when the call is made,
       // so a skipped or deduped response can never wedge the loop. A pending
@@ -315,6 +278,7 @@ export function useSessionLoop(onNeedsApiKey: () => void) {
           mode: s.mode ?? "tech_support",
           goal: s.goal!,
           completedSteps: s.completedSteps,
+          upcomingSteps: s.upcomingSteps,
           conversation: s.conversation,
           frames: s.frames,
           followUp,
@@ -649,15 +613,19 @@ export function useSessionLoop(onNeedsApiKey: () => void) {
 
           const s = useSession.getState();
           if (s.status !== "watching") break;
-          const cfg = getModeConfig(s.mode);
-          // Teacher mode has no auto-poll — the chain exits and the
-          // follow-up watcher drives everything.
+          const cfg = await ensureAgentPolicy(s.mode ?? "tech_support");
+          if (!cfg) {
+            await sleep(POLICY_RETRY_MS);
+            continue;
+          }
+          // An agent with no auto-poll (teacher) exits the chain here — the
+          // follow-up watcher drives everything for it.
           if (cfg.normalIntervalMs === 0) break;
 
           // After a long stretch with no screen change, slow the backstop.
           const sinceChangeMs = Date.now() - (s.lastScreenChangeAt ?? Date.now());
           const delayMs =
-            sinceChangeMs > TS_SLOW_AFTER_MS
+            sinceChangeMs > SLOW_AFTER_MS
               ? cfg.slowIntervalMs
               : cfg.normalIntervalMs;
           await sleep(delayMs);
@@ -714,11 +682,32 @@ export function useSessionLoop(onNeedsApiKey: () => void) {
     return unsub;
   }, []);
 
-  // Quiet period trigger: wait for TS_QUIET_PERIOD_MS of silence after user
-  // activity, then fire a tick. Disabled in training and teacher modes
-  // (cfg.quietPeriodMs=0) and while the user is off on a digression — the
-  // backstop timer covers re-checking until they return to the task.
-  useQuietPeriod(TS_QUIET_PERIOD_MS, () => {
+  // The input trigger's debounce is the agent's, so it has to become state:
+  // useQuietPeriod re-subscribes when the value changes, and it starts at 0
+  // (disabled) until the agent has been described.
+  const [quietPeriodMs, setQuietPeriodMs] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    const load = (mode: AppMode | null) => {
+      void ensureAgentPolicy(mode ?? "tech_support").then((policy) => {
+        if (!cancelled) setQuietPeriodMs(policy?.quietPeriodMs ?? 0);
+      });
+    };
+    load(useSession.getState().mode);
+    const unsub = useSession.subscribe((state, prev) => {
+      if (state.mode !== prev.mode) load(state.mode);
+    });
+    return () => {
+      cancelled = true;
+      unsub();
+    };
+  }, []);
+
+  // Input trigger: wait for the agent's quiet period of silence after user
+  // activity, then fire a tick. An agent with quietPeriodMs=0 (training,
+  // teacher) never subscribes at all. Also skipped while the user is off on a
+  // digression — the backstop covers re-checking until they return.
+  useQuietPeriod(quietPeriodMs, () => {
     const s = useSession.getState();
     if (s.status !== "watching") return;
     if (s.diverted) return;
@@ -727,8 +716,6 @@ export function useSessionLoop(onNeedsApiKey: () => void) {
     // Nor while the user is holding the mic — the keystrokes that opened it
     // are exactly the "activity" that would otherwise trigger this.
     if (s.listening || s.transcribing) return;
-    const cfg = getModeConfig(s.mode);
-    if (cfg.quietPeriodMs <= 0) return;
     void tickRef.current("input");
   });
 }

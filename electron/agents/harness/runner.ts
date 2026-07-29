@@ -1,0 +1,363 @@
+// The agent loop: one turn, start to finish.
+//
+//   build request → stream → model calls a tool
+//     ├─ say/wait  → terminal. Parse it, return.
+//     └─ anything else → run it, append the result, go again
+//
+// bounded by agent.maxToolIterations.
+//
+// Two things make this loop safe to run in front of a live voice coach:
+//
+// 1. SPEECH STREAMS OUT OF THE TOOL CALL ITSELF. The model's turn output IS a
+//    `say` tool call, and Anthropic streams tool inputs as `input_json_delta`
+//    — the same accumulating JSON text InstructionChunker already parses. So
+//    TTS still starts on the first finished sentence, mid-generation, exactly
+//    as it did before tools existed.
+//
+// 2. THE SILENCE GATE IS EXACT. The tool NAME arrives in `content_block_start`,
+//    before any input text streams. A `wait` turn is therefore known silent
+//    with nothing buffered and nothing to retract — strictly better than the
+//    old approach of scanning accumulated text for an "action" key and holding
+//    chunks until it appeared.
+//
+// `disable_parallel_tool_use` forces exactly one tool per response, which is
+// what makes "did the turn end?" a single unambiguous check rather than a
+// reconciliation between a terminal call and a lookup in the same response.
+
+import type Anthropic from "@anthropic-ai/sdk";
+import type { InstructionResponse } from "../../types";
+import { InstructionChunker, type SpeechChunk } from "../../speech-chunker";
+import { parseInstruction } from "../../instruction-parse";
+import { estimateCostUsd, normalizeUsage, type TokenUsage } from "../../usage";
+import { buildContextHeader } from "./context";
+import { parseTerminalTool } from "./parse-turn";
+import { midTurnTools, systemPrompt, toolDefinitions } from "./schema";
+import { asRateLimit } from "./errors";
+import {
+  SAY_TOOL,
+  WAIT_TOOL,
+  type Agent,
+  type PlanDraft,
+  type ToolDeps,
+  type ToolOutput,
+  type TurnContext,
+} from "./types";
+
+const MAX_TOKENS = 800;
+/** Previous frame + latest frame. See the note in claude.ts on frame budget. */
+const MAX_FRAMES = 2;
+
+export interface RunTurnOptions {
+  client: Anthropic;
+  model: string;
+  agent: Agent;
+  ctx: TurnContext;
+  deps: ToolDeps;
+  /** Re-encode a historical frame smaller. Injected to keep this Electron-free. */
+  toContextResolution(dataUrl: string): string;
+  /** Fires per finished sentence, mid-stream. Never fires for a `wait` turn. */
+  onSpeechChunk?: (chunk: SpeechChunk) => void;
+  log(message: string): void;
+}
+
+export interface TurnResult extends InstructionResponse {
+  /** Names of mid-turn tools the model used, in call order. */
+  toolsUsed: string[];
+  /** Plan edits requested this turn, for the caller to apply. */
+  planEdits: PlanDraft["edits"];
+}
+
+type Block = Anthropic.Messages.TextBlockParam | Anthropic.Messages.ImageBlockParam;
+
+function stripDataUrlPrefix(dataUrl: string): string {
+  const comma = dataUrl.indexOf(",");
+  return comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+}
+
+type ImageMediaType = "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+
+function mediaTypeOf(dataUrl: string): ImageMediaType {
+  const m = /^data:(image\/(?:png|jpeg|webp|gif));/.exec(dataUrl);
+  return (m?.[1] as ImageMediaType) ?? "image/png";
+}
+
+function imageBlock(dataUrl: string): Anthropic.Messages.ImageBlockParam {
+  return {
+    type: "image",
+    source: {
+      type: "base64",
+      media_type: mediaTypeOf(dataUrl),
+      data: stripDataUrlPrefix(dataUrl),
+    },
+  };
+}
+
+/** The opening user turn: context header, then the frames, then any follow-up. */
+function buildUserBlocks(
+  agent: Agent,
+  ctx: TurnContext,
+  toContextResolution: (dataUrl: string) => string,
+): Block[] {
+  // When the screen hasn't changed, the history frame is a duplicate that
+  // costs full image prefill to show the model the same picture twice.
+  const budget = ctx.screenChanged === false ? 1 : MAX_FRAMES;
+  const frames = ctx.frames.slice(-budget);
+
+  const blocks: Block[] = [
+    { type: "text", text: buildContextHeader(agent, ctx, frames.length) },
+  ];
+
+  for (let i = 0; i < frames.length; i++) {
+    const isLatest = i === frames.length - 1;
+    // Only the latest frame has to be sharp enough to read a button label.
+    const dataUrl = isLatest
+      ? frames[i].dataUrl
+      : toContextResolution(frames[i].dataUrl);
+    blocks.push({
+      type: "text",
+      text: isLatest
+        ? "Latest screenshot (most recent, full resolution):"
+        : `Screenshot ${i + 1} of ${frames.length} (earlier, reduced resolution — for comparison only):`,
+    });
+    blocks.push(imageBlock(dataUrl));
+  }
+
+  if (ctx.followUp && ctx.followUp.trim().length > 0) {
+    blocks.push({ type: "text", text: `User follow-up: ${ctx.followUp.trim()}` });
+  }
+
+  return blocks;
+}
+
+function toolResultBlock(
+  toolUseId: string,
+  out: ToolOutput,
+): Anthropic.Messages.ToolResultBlockParam {
+  const content: Array<
+    Anthropic.Messages.TextBlockParam | Anthropic.Messages.ImageBlockParam
+  > = [];
+  if (out.text) content.push({ type: "text", text: out.text });
+  if (out.imageDataUrl) content.push(imageBlock(out.imageDataUrl));
+  if (content.length === 0) content.push({ type: "text", text: "(no result)" });
+  return {
+    type: "tool_result",
+    tool_use_id: toolUseId,
+    content,
+    ...(out.isError ? { is_error: true } : {}),
+  };
+}
+
+interface StreamOutcome {
+  message: Anthropic.Messages.Message;
+  usage: TokenUsage;
+}
+
+/**
+ * One request. Streams, routing `say` input deltas into the chunker so speech
+ * starts before the response finishes.
+ */
+async function streamOnce(
+  opts: RunTurnOptions,
+  messages: Anthropic.Messages.MessageParam[],
+  tools: ReturnType<typeof toolDefinitions>,
+): Promise<StreamOutcome> {
+  const { client, model, agent, onSpeechChunk } = opts;
+
+  const stream = client.messages.stream({
+    model,
+    max_tokens: MAX_TOKENS,
+    // Cache breakpoint on the system prompt. Tools render BEFORE system, so
+    // this one marker covers the tool definitions too — which is exactly why
+    // the tool list has to stay a fixed literal per agent.
+    system: [
+      {
+        type: "text",
+        text: systemPrompt(agent),
+        cache_control: { type: "ephemeral" },
+      } as unknown as Anthropic.Messages.TextBlockParam,
+    ],
+    tools: tools as unknown as Anthropic.Messages.Tool[],
+    // Exactly one tool per response: the model either looks something up or
+    // ends its turn, never both. Makes "is the turn over?" a single check.
+    tool_choice: {
+      type: "any",
+      disable_parallel_tool_use: true,
+    } as unknown as Anthropic.Messages.ToolChoice,
+    messages,
+  });
+
+  const chunker = new InstructionChunker();
+  // Index of the `say` block, if this response is one. Only deltas carrying
+  // this index feed the chunker — a mid-turn tool's input must never be read
+  // aloud, and neither must a `wait`.
+  let sayIndex = -1;
+  let sayJson = "";
+
+  for await (const event of stream) {
+    if (
+      event.type === "content_block_start" &&
+      event.content_block.type === "tool_use"
+    ) {
+      if (event.content_block.name === SAY_TOOL) sayIndex = event.index;
+      continue;
+    }
+    if (
+      event.type === "content_block_delta" &&
+      event.delta.type === "input_json_delta" &&
+      event.index === sayIndex
+    ) {
+      sayJson += event.delta.partial_json;
+      if (onSpeechChunk) {
+        for (const chunk of chunker.push(sayJson)) onSpeechChunk(chunk);
+      }
+    }
+  }
+
+  if (sayIndex >= 0 && onSpeechChunk) {
+    for (const chunk of chunker.finish()) onSpeechChunk(chunk);
+  }
+
+  const message = await stream.finalMessage();
+  return { message, usage: normalizeUsage(message.usage) };
+}
+
+function accumulate(a: TokenUsage, b: TokenUsage): TokenUsage {
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens,
+    cacheCreationTokens: a.cacheCreationTokens + b.cacheCreationTokens,
+  };
+}
+
+const ZERO_USAGE: TokenUsage = {
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheCreationTokens: 0,
+};
+
+/** Run one full agent turn, including any mid-turn tool calls. */
+export async function runAgentTurn(opts: RunTurnOptions): Promise<TurnResult> {
+  const { agent, ctx, deps, model, log } = opts;
+  const tools = toolDefinitions(agent);
+  const toolsByName = new Map(midTurnTools(agent).map((t) => [t.name, t]));
+
+  const messages: Anthropic.Messages.MessageParam[] = [
+    // History is text-only; vision frames ride on the current turn.
+    ...ctx.conversation.slice(-10).map((t) => ({
+      role: t.role,
+      content: t.content,
+    })),
+    {
+      role: "user",
+      content: buildUserBlocks(agent, ctx, opts.toContextResolution),
+    },
+  ];
+
+  const toolsUsed: string[] = [];
+  let usage = ZERO_USAGE;
+
+  try {
+    for (let iteration = 0; iteration < agent.maxToolIterations; iteration++) {
+      // On the final permitted iteration the model must finish, so drop the
+      // mid-turn tools from the request. Removing tools mid-conversation costs
+      // the cache, but this only fires on a turn that already spent its whole
+      // budget looking things up — a rare path, and finishing beats caching.
+      const lastChance = iteration === agent.maxToolIterations - 1;
+      const activeTools = lastChance
+        ? tools.filter((t) => t.name === SAY_TOOL || t.name === WAIT_TOOL)
+        : tools;
+      if (lastChance && toolsByName.size > 0) {
+        log(`[agent:${agent.id}] tool budget spent — forcing a terminal turn`);
+      }
+
+      const { message, usage: turnUsage } = await streamOnce(
+        opts,
+        messages,
+        activeTools,
+      );
+      usage = accumulate(usage, turnUsage);
+
+      const toolUse = message.content.find(
+        (b): b is Anthropic.Messages.ToolUseBlock => b.type === "tool_use",
+      );
+
+      // No tool call at all. tool_choice:"any" should make this impossible,
+      // but a schema-rejected turn would land here — fall back to reading the
+      // response as the old-style JSON blob rather than going silent.
+      if (!toolUse) {
+        const text = message.content
+          .filter((b): b is Anthropic.Messages.TextBlock => b.type === "text")
+          .map((b) => b.text)
+          .join("\n")
+          .trim();
+        log(
+          `[agent:${agent.id}] no tool call (stop=${message.stop_reason}) — falling back to text parse`,
+        );
+        return {
+          ...parseInstruction(text, ctx.completedSteps),
+          usage,
+          model,
+          costUsd: estimateCostUsd(model, usage),
+          toolsUsed,
+          planEdits: deps.planDraft.edits,
+        };
+      }
+
+      if (toolUse.name === SAY_TOOL || toolUse.name === WAIT_TOOL) {
+        const parsed = parseTerminalTool(
+          toolUse.name,
+          (toolUse.input ?? {}) as Record<string, unknown>,
+          ctx.completedSteps,
+        );
+        return {
+          ...parsed,
+          usage,
+          model,
+          costUsd: estimateCostUsd(model, usage),
+          toolsUsed,
+          planEdits: deps.planDraft.edits,
+        };
+      }
+
+      // Mid-turn tool. Run it, feed the result back, go again.
+      const tool = toolsByName.get(toolUse.name);
+      toolsUsed.push(toolUse.name);
+      let out: ToolOutput;
+      if (!tool) {
+        out = { text: `Unknown tool "${toolUse.name}".`, isError: true };
+      } else {
+        const startedAt = Date.now();
+        try {
+          out = await tool.run(
+            (toolUse.input ?? {}) as Record<string, unknown>,
+            deps,
+          );
+          log(
+            `[agent:${agent.id}] tool ${toolUse.name} ok in ${Date.now() - startedAt}ms` +
+              (out.imageDataUrl ? " (+image)" : ""),
+          );
+        } catch (err) {
+          // A failed tool must never fail the turn — the agent still has to
+          // say something. Hand the error back and let it adapt.
+          const msg = err instanceof Error ? err.message : String(err);
+          log(`[agent:${agent.id}] tool ${toolUse.name} FAILED: ${msg}`);
+          out = { text: `Tool failed: ${msg}`, isError: true };
+        }
+      }
+
+      messages.push({ role: "assistant", content: message.content });
+      messages.push({ role: "user", content: [toolResultBlock(toolUse.id, out)] });
+    }
+  } catch (err) {
+    const rate = asRateLimit(err);
+    if (rate) throw rate;
+    throw err;
+  }
+
+  // maxToolIterations must be >= 1 for the loop above to run at all.
+  throw new Error(
+    `Agent "${agent.id}" has maxToolIterations=${agent.maxToolIterations}; it must be at least 1.`,
+  );
+}

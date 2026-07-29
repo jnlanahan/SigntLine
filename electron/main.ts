@@ -54,6 +54,7 @@ import {
   MissingApiKeyError,
   RateLimitError,
 } from "./claude";
+import { describeAgent } from "./agents/registry";
 import { MissingOpenAIKeyError, transcribe } from "./whisper";
 import { hasGoogleCredentials } from "./google-tts";
 import { speak as synthesizeSpeech, warmPhraseCache } from "./tts";
@@ -938,6 +939,7 @@ function registerIpc() {
         mode: AppMode;
         goal: string;
         completedSteps: string[];
+        upcomingSteps?: string[];
         conversation: ConversationTurn[];
         frames: CaptureFrame[];
         followUp?: string;
@@ -955,15 +957,47 @@ function registerIpc() {
     ) => {
       const startedAt = Date.now();
       try {
-        const result = await getNextInstruction(args, (chunk) => {
-          if (!e.sender.isDestroyed()) {
-            e.sender.send("claude:speech-chunk", chunk);
-          }
-        });
+        const result = await getNextInstruction(
+          args,
+          (chunk) => {
+            if (!e.sender.isDestroyed()) {
+              e.sender.send("claude:speech-chunk", chunk);
+            }
+          },
+          {
+            // The agent's zoom lens. Re-captures at near-native resolution
+            // and crops, so small on-screen text becomes readable. Geometry
+            // recording is off: the glow overlay maps highlight fractions
+            // against the last recorded rect, and a zoomed read must not
+            // become that reference.
+            async captureRegion(rect) {
+              const settings = loadSettings();
+              try {
+                return await captureFrame(
+                  {
+                    displayId: settings.selectedDisplayId ?? null,
+                    sourceId: settings.selectedSourceId,
+                    sourceName: settings.selectedSourceName,
+                  },
+                  settings.captureRegion ?? null,
+                  { zoom: rect, recordGeometry: false },
+                );
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                logLine(`[agent] read_screen_region capture failed: ${msg}`);
+                return null;
+              }
+            },
+            log: logLine,
+          },
+        );
         logLine(
           `[claude] action=${result.action} in ${Date.now() - startedAt}ms ` +
             `digression=${result.digression} needsResearch=${result.needsResearch} ` +
-            `steps=${result.completedSteps.length} highlight=${result.highlight ? "yes" : "no"}`,
+            `steps=${result.completedSteps.length} highlight=${result.highlight ? "yes" : "no"}` +
+            (result.toolsUsed?.length
+              ? ` tools=[${result.toolsUsed.join(",")}]`
+              : ""),
         );
         return result;
       } catch (err) {
@@ -982,6 +1016,23 @@ function registerIpc() {
         logLine(`[claude] FAILED after ${Date.now() - startedAt}ms: ${msg}`);
         return { __error: "request_failed", message: msg } as const;
       }
+    },
+  );
+
+  // The renderer asks the agent how it wants to be ticked. The agent owns the
+  // cadence; the renderer owns the scheduler, because ticking needs the frame
+  // hash, the TTS queue, and the session store — all renderer-side.
+  ipcMain.handle(
+    "agent:describe",
+    (_e: IpcMainInvokeEvent, payload: { mode: AppMode }) => {
+      const descriptor = describeAgent(payload.mode);
+      logLine(
+        `[agent] describe ${descriptor.id}: poll=${descriptor.loop.normalIntervalMs}ms ` +
+          `spacing=${descriptor.loop.minCallSpacingMs}ms quiet=${descriptor.loop.quietPeriodMs}ms ` +
+          `stall=${descriptor.loop.stallEnabled} skills=[${descriptor.skills.join(",")}] ` +
+          `tools=[${descriptor.tools.join(",")}]`,
+      );
+      return descriptor;
     },
   );
 

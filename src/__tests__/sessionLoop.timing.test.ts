@@ -12,28 +12,14 @@ async function loopSource(): Promise<string> {
 }
 
 describe("timing constants (regression guards)", () => {
-  // Lowered from 5_000 (July 2026) together with the quiet period. The loop
-  // looking more often does not make the coach talk more often — "wait" is
-  // the model's most common action — so this buys reaction speed, not
-  // interruptions. Cost is bounded by the session budget guardrails instead.
-  it("TS_MIN_CALL_SPACING_MS is 3000", async () => {
-    expect(await loopSource()).toContain("TS_MIN_CALL_SPACING_MS = 3_000");
-  });
-
-  // Lowered from 3_500 (July 2026). This is the dominant term in perceived
-  // latency after the user clicks something, and the single biggest win
-  // available on "why is it so slow to react".
-  it("TS_QUIET_PERIOD_MS is 1500", async () => {
-    expect(await loopSource()).toContain("TS_QUIET_PERIOD_MS = 1_500");
-  });
-
-  it("TS_BACKSTOP_MS is 15000", async () => {
-    expect(await loopSource()).toContain("TS_BACKSTOP_MS = 15_000");
-  });
-
-  it("TS_SLOW_BACKSTOP_MS is 30000", async () => {
-    expect(await loopSource()).toContain("TS_SLOW_BACKSTOP_MS = 30_000");
-  });
+  // The per-mode cadence moved onto the agents (electron/agents/*.ts →
+  // Agent.loop) so each agent owns its own loop. The VALUES are unchanged and
+  // are now asserted against the agent objects directly in
+  // agentHarness.test.ts — a stronger guard than grepping source text.
+  //
+  // What stays here is the loop EXECUTOR's own behaviour: the guards, the
+  // gates, and the hysteresis that belong to the scheduler rather than to any
+  // one agent.
 
   it("CHECK_IN_REPEAT_MS is 60000", async () => {
     expect(await loopSource()).toContain("CHECK_IN_REPEAT_MS = 60_000");
@@ -107,9 +93,19 @@ describe("vision payload size (regression guards)", () => {
   // time-to-first-token. Reduced from 3 to 2 in July 2026; raising it again
   // is a deliberate latency-for-context trade.
   it("MAX_FRAMES is 2", async () => {
-    const src = await import("../../electron/claude?raw");
+    const src = await import("../../electron/agents/harness/runner?raw");
     expect((src as unknown as { default: string }).default).toContain(
       "const MAX_FRAMES = 2",
     );
+  });
+
+  // A turn may now spend several round trips on tools before it speaks, and
+  // every one of them is silence the user sits through. The cap is the
+  // latency budget — raising it is a deliberate trade.
+  it("the tech support agent caps a turn at 3 iterations", async () => {
+    const { techSupportAgent } = await import(
+      "../../electron/agents/tech-support"
+    );
+    expect(techSupportAgent.maxToolIterations).toBe(3);
   });
 });

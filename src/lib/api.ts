@@ -10,6 +10,7 @@ export const api = (): SightLineApi => window.sightline;
 
 export type {
   AccentName,
+  AgentDescriptor,
   ApiKeyStatus,
   AppMode,
   Clarification,
@@ -26,6 +27,7 @@ export type {
   HighlightRect,
   InstructionAction,
   InstructionResponse,
+  LoopPolicy,
   PushToTalkKey,
   SessionPlan,
   Settings,

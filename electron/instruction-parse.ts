@@ -16,7 +16,7 @@ const VALID_MEMORY_KINDS = new Set([
 // of every future session.
 const MAX_MEMORY_CHARS = 200;
 
-function parseRemember(raw: unknown): RememberedFact | null {
+export function parseRemember(raw: unknown): RememberedFact | null {
   if (typeof raw !== "object" || raw === null) return null;
   const o = raw as Record<string, unknown>;
   const content = typeof o.content === "string" ? o.content.trim() : "";
@@ -50,7 +50,7 @@ export function extractJson(text: string): string | null {
 
 // Accept a highlight only when it's a plausible fractional box; clamp into
 // [0,1] so a slightly-out-of-range value doesn't discard the whole thing.
-function parseHighlight(raw: unknown): HighlightRect | null {
+export function parseHighlight(raw: unknown): HighlightRect | null {
   if (typeof raw !== "object" || raw === null) return null;
   const o = raw as Record<string, unknown>;
   const nums = [o.x, o.y, o.w, o.h];

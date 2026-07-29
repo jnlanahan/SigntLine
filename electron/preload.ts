@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   ApiKeyStatus,
+  AgentDescriptor,
   AppMode,
   Clarification,
   CaptureFrame,
@@ -51,11 +52,19 @@ export interface SightLineApi {
   files: {
     pickContext(): Promise<UploadedContext[]>;
   };
+  agent: {
+    /**
+     * Ask the agent for this mode how it wants to be ticked. Called once at
+     * session start; the returned LoopPolicy drives the renderer's loop.
+     */
+    describe(args: { mode: AppMode }): Promise<AgentDescriptor>;
+  };
   claude: {
     nextInstruction(args: {
       mode: AppMode;
       goal: string;
       completedSteps: string[];
+      upcomingSteps?: string[];
       conversation: ConversationTurn[];
       frames: CaptureFrame[];
       followUp?: string;
@@ -207,6 +216,9 @@ const api: SightLineApi = {
   },
   files: {
     pickContext: () => ipcRenderer.invoke("files:pick-context"),
+  },
+  agent: {
+    describe: (args) => ipcRenderer.invoke("agent:describe", args),
   },
   claude: {
     nextInstruction: (args) =>

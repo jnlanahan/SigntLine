@@ -1,157 +1,202 @@
 import { describe, expect, it } from "vitest";
-import {
-  techSupportSystemPrompt,
-  TECH_SUPPORT_FOLLOW_UP_GUIDANCE,
-} from "../../electron/agents/tech-support";
-import {
-  trainingSystemPrompt,
-  TRAINING_FOLLOW_UP_GUIDANCE,
-} from "../../electron/agents/training";
-import {
-  teacherSystemPrompt,
-  TEACHER_FOLLOW_UP_GUIDANCE,
-} from "../../electron/agents/teacher";
-import { parseInstruction } from "../../electron/instruction-parse";
+import { allAgents } from "../../electron/agents/registry";
+import { systemPrompt, terminalTools } from "../../electron/agents/harness/schema";
+import { parseTerminalTool } from "../../electron/agents/harness/parse-turn";
+import type { Agent } from "../../electron/agents/harness/types";
 
-const PROMPTS: Array<[string, string]> = [
-  ["tech support", techSupportSystemPrompt()],
-  ["training", trainingSystemPrompt()],
-  ["teacher", teacherSystemPrompt()],
-];
+const AGENTS: Array<[string, Agent]> = allAgents().map((a) => [a.id, a]);
 
-const FOLLOW_UP_GUIDANCE: Array<[string, string]> = [
-  ["tech support", TECH_SUPPORT_FOLLOW_UP_GUIDANCE],
-  ["training", TRAINING_FOLLOW_UP_GUIDANCE],
-  ["teacher", TEACHER_FOLLOW_UP_GUIDANCE],
-];
+function sayTool(agent: Agent) {
+  const tool = terminalTools(agent).find((t) => t.name === "say");
+  if (!tool) throw new Error(`agent ${agent.id} has no say tool`);
+  return tool;
+}
+
+function waitTool(agent: Agent) {
+  const tool = terminalTools(agent).find((t) => t.name === "wait");
+  if (!tool) throw new Error(`agent ${agent.id} has no wait tool`);
+  return tool;
+}
 
 describe("every agent can choose to stay silent", () => {
-  // The bug this locks: a mode with no "action" field had no way to express
-  // "say nothing". Its silent turns parsed as "instruct" with an empty
-  // instruction, which fell back to speaking the raw JSON response aloud.
-  it.each(PROMPTS)("%s declares the action set", (_name, prompt) => {
-    expect(prompt).toContain('"action"');
-    expect(prompt).toContain('"wait"');
+  // The bug this locks: a mode with no way to express "say nothing" had its
+  // silent turns parsed as "instruct" with an empty instruction, which fell
+  // back to speaking the raw response aloud. Silence is now its own tool, so
+  // the failure is structurally impossible rather than prompt-enforced.
+  it.each(AGENTS)("%s has a wait tool", (_name, agent) => {
+    expect(waitTool(agent).name).toBe("wait");
   });
 
-  it.each(PROMPTS)("%s emits the action first, so speech can be gated", (_name, prompt) => {
-    expect(prompt).toContain('Output the "action" key FIRST');
+  it.each(AGENTS)("%s cannot say wait as an action", (_name, agent) => {
+    // If "wait" were an action value on `say`, a silent turn would still be a
+    // speech call and the streaming gate would have to buffer and retract.
+    const action = sayTool(agent).input_schema.properties.action as {
+      enum: string[];
+    };
+    expect(action.enum).not.toContain("wait");
   });
 
-  it.each(PROMPTS)("%s requires an empty instruction on a silent turn", (_name, prompt) => {
-    expect(prompt.toLowerCase()).toContain("empty string when action is \"wait\"");
+  it.each(AGENTS)("%s carries bookkeeping fields on wait", (_name, agent) => {
+    // A silent turn must still be able to record progress — the loop has
+    // always applied completed_steps and notes on every action, including
+    // wait, so the agent can mark progress without speaking.
+    const props = waitTool(agent).input_schema.properties;
+    expect(props).toHaveProperty("completed_steps");
+    expect(props).toHaveProperty("notes");
+  });
+
+  it.each(AGENTS)("%s carries no speech fields on wait", (_name, agent) => {
+    const props = waitTool(agent).input_schema.properties;
+    expect(props).not.toHaveProperty("instruction");
+    expect(props).not.toHaveProperty("action");
+  });
+
+  it.each(AGENTS)("%s requires nothing to call wait", (_name, agent) => {
+    // A wait must be cheap and always valid; a required field would give the
+    // model a reason to speak instead.
+    expect(waitTool(agent).input_schema.required).toEqual([]);
+  });
+});
+
+describe("speech streams as early as possible", () => {
+  it.each(AGENTS)("%s requires an instruction to speak", (_name, agent) => {
+    expect(sayTool(agent).input_schema.required).toContain("instruction");
+  });
+
+  it.each(AGENTS)("%s puts instruction near the front of say", (_name, agent) => {
+    // Schema property order biases generation order, and TTS starts on the
+    // first finished sentence of `instruction`. Burying it behind the
+    // bookkeeping fields would delay every spoken word by the time it takes
+    // to generate the rest of the turn.
+    const keys = Object.keys(sayTool(agent).input_schema.properties);
+    expect(keys[0]).toBe("action");
+    expect(keys.indexOf("instruction")).toBeLessThanOrEqual(2);
   });
 });
 
 describe("a direct question is never answered with silence", () => {
   // The bug this locks: the user typed "Done — what's next?", the coach played
-  // its thinking filler ("Let me take a look."), and the model then returned
-  // action=wait with an empty instruction. The user heard the filler and then
-  // nothing at all. Silence is a valid answer to a still screen; it is never a
-  // valid answer to a question.
-  it.each(FOLLOW_UP_GUIDANCE)("%s forbids wait on a follow-up turn", (_name, guidance) => {
-    expect(guidance).toContain('never "wait"');
+  // its thinking filler ("Let me take a look."), and the model then stayed
+  // silent. The user heard the filler and then nothing at all. Silence is a
+  // valid answer to a still screen; it is never a valid answer to a question.
+  it.each(AGENTS)("%s forbids wait on a follow-up turn", (_name, agent) => {
+    expect(agent.guidance.followUp).toContain("never wait");
   });
 
-  it.each(FOLLOW_UP_GUIDANCE)("%s names the actions it may use instead", (_name, guidance) => {
-    expect(guidance).toContain('"instruct"');
-    expect(guidance).toContain('"acknowledge"');
-    expect(guidance).toContain('"done"');
+  it.each(AGENTS)("%s points at this turn's follow-up", (_name, agent) => {
+    expect(agent.guidance.followUp.toLowerCase()).toContain("follow-up");
   });
 
-  it.each(FOLLOW_UP_GUIDANCE)("%s points at this turn's follow-up", (_name, guidance) => {
-    expect(guidance.toLowerCase()).toContain("follow-up");
+  it.each(AGENTS)("%s must speak on the first turn", (_name, agent) => {
+    expect(agent.guidance.sessionStart).toContain("Do not call wait");
   });
 });
 
 describe("every agent shares the same output contract", () => {
-  it.each(PROMPTS)("%s asks for bare JSON", (_name, prompt) => {
-    expect(prompt).toContain("JSON object only");
-    expect(prompt).toContain("no code fences");
+  it.each(AGENTS)("%s declares the cross-session memory field", (_name, agent) => {
+    const remember = sayTool(agent).input_schema.properties.remember as {
+      properties: { kind: { enum: string[] } };
+    };
+    expect(remember.properties.kind.enum).toEqual([
+      "setup",
+      "preference",
+      "history",
+      "obstacle",
+    ]);
   });
 
-  it.each(PROMPTS)("%s declares the cross-session memory field", (_name, prompt) => {
-    expect(prompt).toContain('"remember"');
-    expect(prompt).toContain('"setup"|"preference"|"history"|"obstacle"');
+  it.each(AGENTS)("%s keeps the shared voice rules", (_name, agent) => {
+    expect(systemPrompt(agent)).toContain("Sound like a human, not a script");
   });
 
-  it.each(PROMPTS)("%s keeps the shared voice rules", (_name, prompt) => {
-    expect(prompt).toContain("Sound like a human, not a script");
-  });
-
-  it.each(PROMPTS)("%s never promises to wait for the user to report in", (_name, prompt) => {
+  it.each(AGENTS)("%s never promises to wait for a report-in", (_name, agent) => {
     // The app is watching the screen; asking for a thumbs-up is both wrong and
     // the fastest way to make it feel like it isn't paying attention.
-    expect(prompt).toContain('NEVER say "let me know when you\'re done"');
+    expect(systemPrompt(agent)).toContain(
+      'NEVER say "let me know when you\'re done"',
+    );
+  });
+
+  it.each(AGENTS)("%s refuses to remember sensitive details", (_name, agent) => {
+    // A coach that memorizes a password is a security incident.
+    expect(systemPrompt(agent).toLowerCase()).toContain("sensitive");
   });
 });
 
 describe("agent roles stay distinct", () => {
+  const byId = Object.fromEntries(allAgents().map((a) => [a.id, a]));
+
   it("tech support directs, training does not", () => {
-    expect(trainingSystemPrompt()).toContain("Never tell the user how to do something");
-    expect(techSupportSystemPrompt()).toContain("one concrete step at a time");
+    expect(systemPrompt(byId.training)).toContain(
+      "Never tell the user how to do something",
+    );
+    expect(systemPrompt(byId.tech_support)).toContain("one concrete step at a time");
   });
 
   it("training treats silence as the default", () => {
-    expect(trainingSystemPrompt()).toContain("overwhelming majority of your turns");
+    expect(systemPrompt(byId.training)).toContain(
+      "overwhelming majority of your turns",
+    );
   });
 
   it("teacher is conversational rather than screen-driven", () => {
-    expect(teacherSystemPrompt()).toContain("This is a CONVERSATION");
+    expect(systemPrompt(byId.teacher)).toContain("This is a CONVERSATION");
   });
 
   it("only tech support points at things on screen", () => {
-    expect(techSupportSystemPrompt()).toContain('"highlight"');
-    // The other two explicitly pin highlight to null rather than leaving it
-    // open — neither should ever draw a box on the user's screen.
-    expect(trainingSystemPrompt()).toContain('"highlight" is always null');
-    expect(teacherSystemPrompt()).toContain('"highlight" is always null');
+    // The other two have no highlight field at all, so neither can draw a box
+    // on the user's screen even if it wanted to.
+    expect(sayTool(byId.tech_support).input_schema.properties).toHaveProperty(
+      "highlight",
+    );
+    expect(sayTool(byId.training).input_schema.properties).not.toHaveProperty(
+      "highlight",
+    );
+    expect(sayTool(byId.teacher).input_schema.properties).not.toHaveProperty(
+      "highlight",
+    );
   });
 
   it("only tech support troubleshoots", () => {
-    expect(techSupportSystemPrompt()).toContain("Troubleshooting");
-    expect(trainingSystemPrompt()).toContain('"troubleshooting": false');
-    expect(teacherSystemPrompt()).toContain('"troubleshooting": false');
-  });
-});
-
-describe("memory rules protect the user", () => {
-  it.each(PROMPTS)("%s refuses to remember sensitive details", (_name, prompt) => {
-    const lower = prompt.toLowerCase();
-    // Every agent gets this via its own memory rules or the shared field
-    // rules; a coach that memorizes a password is a security incident.
-    expect(
-      lower.includes("sensitive") || lower.includes("password"),
-    ).toBe(true);
+    expect(systemPrompt(byId.tech_support)).toContain("Troubleshooting");
+    expect(waitTool(byId.training).input_schema.properties).not.toHaveProperty(
+      "troubleshooting",
+    );
+    expect(waitTool(byId.teacher).input_schema.properties).not.toHaveProperty(
+      "troubleshooting",
+    );
   });
 });
 
 describe("a silent turn stays silent end to end", () => {
-  it("parses a wait turn without inventing speech", () => {
-    const response = JSON.stringify({
-      action: "wait",
-      expected_pace: "medium",
-      instruction: "",
-      completed_steps: ["Opened the admin panel"],
-      upcoming_steps: [],
-      digression: false,
-      needsResearch: false,
-      researchQuery: "",
-      notes: "",
-      highlight: null,
-      remember: null,
-    });
-    const parsed = parseInstruction(response, []);
+  it("parses a wait call without inventing speech", () => {
+    const parsed = parseTerminalTool(
+      "wait",
+      { completed_steps: ["Opened the admin panel"], notes: "" },
+      [],
+    );
     expect(parsed.action).toBe("wait");
     expect(parsed.instruction).toBe("");
+    expect(parsed.completedSteps).toEqual(["Opened the admin panel"]);
   });
 
-  it("never falls back to reading the raw JSON aloud on a wait", () => {
+  it("keeps a wait silent even if the model fills in speech fields", () => {
+    // Defence in depth: `wait` has no instruction field, but a model that
+    // hallucinated one must not get it read aloud.
+    const parsed = parseTerminalTool(
+      "wait",
+      { instruction: "Click the Save button", action: "instruct" },
+      [],
+    );
+    expect(parsed.instruction).toBe("");
+    expect(parsed.action).toBe("wait");
+    expect(parsed.highlight).toBeNull();
+  });
+
+  it("never substitutes the raw payload for a missing instruction", () => {
     // The old failure mode: instruction was empty, so the parser substituted
     // the entire response text, and TTS read the JSON to the user.
-    const response = '{"action":"wait","instruction":"","completed_steps":[]}';
-    const parsed = parseInstruction(response, []);
-    expect(parsed.instruction).not.toContain("{");
-    expect(parsed.instruction).not.toContain("action");
+    const parsed = parseTerminalTool("say", { action: "instruct" }, []);
+    expect(parsed.instruction).toBe("");
   });
 });

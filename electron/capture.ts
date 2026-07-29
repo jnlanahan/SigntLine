@@ -12,6 +12,7 @@ import type {
   CaptureRegion,
   CaptureTarget,
   DisplayInfo,
+  HighlightRect,
 } from "./types";
 
 // Calibration is best-effort: capture must keep working (via the ID-matching
@@ -155,6 +156,24 @@ function findPinnedOrCalibrated(
   return null;
 }
 
+export interface CaptureOptions {
+  /**
+   * Sub-rectangle of the FINAL frame (after dock-strip subtraction and the
+   * user's region), as 0-1 fractions. Applied in the near-native grab space
+   * before the downscale, so a small crop comes back far sharper than the same
+   * pixels would be inside a full-frame capture — that resolution gain is the
+   * whole point of the agent's read_screen_region tool.
+   */
+  zoom?: HighlightRect | null;
+  /**
+   * Whether this capture becomes the reference frame for highlight mapping.
+   * A zoomed read must NOT record geometry: the glow overlay maps highlight
+   * fractions against the last recorded rect, so letting a sub-region
+   * overwrite it would place every later glow inside that sub-region.
+   */
+  recordGeometry?: boolean;
+}
+
 /**
  * Capture a single frame from the selected screen. Returned as a base64 JPEG
  * data URL — never written to disk. Caller owns disposal (drop the reference).
@@ -162,6 +181,7 @@ function findPinnedOrCalibrated(
 export async function captureFrame(
   selection: CaptureSelection,
   region: CaptureRegion | null = null,
+  options: CaptureOptions = {},
 ): Promise<CaptureFrame> {
   // Awaiting calibration here also guarantees no capture runs while marker
   // windows are on screen — magenta frames can never reach the model.
@@ -248,6 +268,27 @@ export async function captureFrame(
     }
   }
 
+  // Zoom narrows whatever the effective region already is, expressed as
+  // fractions of it — so it composes correctly with both the dock strip and
+  // the user's region instead of fighting them.
+  if (options.zoom) {
+    const base = effectiveRegion ?? {
+      x: 0,
+      y: 0,
+      width: target.size.width,
+      height: target.size.height,
+    };
+    const z = options.zoom;
+    const zx = base.x + z.x * base.width;
+    const zy = base.y + z.y * base.height;
+    effectiveRegion = {
+      x: zx,
+      y: zy,
+      width: clamp(z.w * base.width, 1, base.x + base.width - zx),
+      height: clamp(z.h * base.height, 1, base.y + base.height - zy),
+    };
+  }
+
   // Crop to the effective region. It's in display-relative DIP, so we scale
   // it into the captured thumbnail's pixel space.
   if (effectiveRegion) {
@@ -269,15 +310,17 @@ export async function captureFrame(
     image = image.resize({ width: MAX_PAYLOAD_WIDTH });
   }
 
-  lastCaptureGeometry = {
-    displayId: String(target.id),
-    rect: effectiveRegion ?? {
-      x: 0,
-      y: 0,
-      width: target.size.width,
-      height: target.size.height,
-    },
-  };
+  if (options.recordGeometry !== false) {
+    lastCaptureGeometry = {
+      displayId: String(target.id),
+      rect: effectiveRegion ?? {
+        x: 0,
+        y: 0,
+        width: target.size.width,
+        height: target.size.height,
+      },
+    };
+  }
 
   const size = image.getSize();
   return {
