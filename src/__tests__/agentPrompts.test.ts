@@ -168,6 +168,49 @@ describe("agent roles stay distinct", () => {
   });
 });
 
+describe("training grades only out loud", () => {
+  const byId = Object.fromEntries(allAgents().map((a) => [a.id, a]));
+
+  it("the verdict and mistake fields live on say alone", () => {
+    // A wait carrying a verdict would advance the plan without the user ever
+    // hearing why — grading is speech by construction.
+    const say = sayTool(byId.training).input_schema.properties;
+    const wait = waitTool(byId.training).input_schema.properties;
+    expect(say).toHaveProperty("task_verdict");
+    expect(say).toHaveProperty("mistake_pattern");
+    expect(wait).not.toHaveProperty("task_verdict");
+    expect(wait).not.toHaveProperty("mistake_pattern");
+    // Training-only: the other agents have no grading surface at all.
+    expect(sayTool(byId.tech_support).input_schema.properties).not.toHaveProperty(
+      "task_verdict",
+    );
+  });
+
+  it("parses a spoken verdict and drops everything else", () => {
+    const passed = parseTerminalTool(
+      "say",
+      { action: "instruct", instruction: "Nice work.", task_verdict: "pass" },
+      [],
+    );
+    expect(passed.taskVerdict).toBe("pass");
+    // An invalid enum value must not advance the plan.
+    const bogus = parseTerminalTool(
+      "say",
+      { action: "instruct", instruction: "Hm.", task_verdict: "maybe" },
+      [],
+    );
+    expect(bogus.taskVerdict).toBeNull();
+    // A wait can never grade, even if the model hallucinates the field.
+    const silent = parseTerminalTool("wait", { task_verdict: "pass" }, []);
+    expect(silent.taskVerdict).toBeNull();
+    expect(silent.mistakePattern).toBe("");
+  });
+
+  it("scans are told they are never a reason to speak", () => {
+    expect(byId.training.nextTurnPrompt).toContain("never a reason to speak");
+  });
+});
+
 describe("a silent turn stays silent end to end", () => {
   it("parses a wait call without inventing speech", () => {
     const parsed = parseTerminalTool(

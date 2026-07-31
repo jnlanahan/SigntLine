@@ -93,18 +93,79 @@ export interface MemoryFact {
   archived: boolean;
 }
 
-/** A reusable, named plan produced by a Training session. */
+/** How one "Check my work" attempt on a task went. */
+export interface TaskFeedback {
+  at: number;
+  verdict: "pass" | "not_yet";
+  summary: string;
+  // Filename under data/plan-frames/<planId>/ for the frame captured at this
+  // check. The one user-approved exception to "screenshots never persist" —
+  // exactly one frame per explicit button press, deleted with the plan.
+  frameFile: string | null;
+}
+
+/** One unit of practice — sized to roughly one sitting. */
+export interface TrainingTask {
+  id: string;
+  // Always present, even before the module is detailed.
+  title: string;
+  // "You will be able to X." Null until the module is detailed.
+  objective: string | null;
+  // Observable criteria the coach grades against. Empty until detailed.
+  doneCriteria: string[];
+  status: "not_started" | "in_progress" | "completed" | "skipped";
+  feedback: TaskFeedback[];
+  completedAt: number | null;
+}
+
+/** A small group of tasks with one theme. Module count scales with the goal. */
+export interface TrainingModule {
+  id: string;
+  title: string;
+  // One line: what this module covers and why it comes next.
+  summary: string;
+  // Whether objectives/doneCriteria have been written yet. Modules are
+  // outlined up front but detailed lazily, informed by how earlier modules
+  // actually went.
+  detailed: boolean;
+  status: "not_started" | "in_progress" | "completed";
+  tasks: TrainingTask[];
+}
+
+export interface TrainingJournalEntry {
+  at: number;
+  sessionId: string;
+  note: string;
+}
+
+/**
+ * A multi-session curriculum the coach designed and walks the user through.
+ * This — not the session — is the unit of long-term progress in Training
+ * mode: sessions come and go, the plan accumulates.
+ */
 export interface TrainingPlan {
   id: string;
   userId: string | null;
   title: string;
   goal: string;
-  mode: SessionRecord["mode"];
-  steps: string[];
+  // Distilled from the intake interview: skill level, pace, learning style.
+  learnerProfile: string;
+  // One-paragraph plan summary, spoken once at plan creation.
+  overview: string;
+  modules: TrainingModule[];
+  // Single progress pointer: indices into modules / tasks.
+  cursor: { module: number; task: number };
+  // Recurring mistake kinds the coach has noticed. Capped and deduped.
+  mistakePatterns: string[];
+  // ~3 lines, overwritten at each session end. The only orientation a fresh
+  // session needs — the PROGRESS.md idea.
+  whereWeLeftOff: string;
+  // ~1 mechanical entry per session.
+  journal: TrainingJournalEntry[];
   createdAt: number;
   updatedAt: number;
   sourceSessionId: string | null;
-  // How many times this plan has been used to start a session.
+  // How many sessions have been started against this plan.
   runCount: number;
 }
 
@@ -188,8 +249,13 @@ create table if not exists training_plans (
   user_id            uuid references users(id) on delete cascade,
   title              text not null,
   goal               text not null,
-  mode               text not null,
-  steps              jsonb not null default '[]'::jsonb,
+  learner_profile    text not null default '',
+  overview           text not null default '',
+  modules            jsonb not null default '[]'::jsonb,
+  cursor             jsonb not null default '{"module":0,"task":0}'::jsonb,
+  mistake_patterns   jsonb not null default '[]'::jsonb,
+  where_we_left_off  text not null default '',
+  journal            jsonb not null default '[]'::jsonb,
   created_at         timestamptz not null default now(),
   updated_at         timestamptz not null default now(),
   source_session_id  uuid references sessions(id) on delete set null,

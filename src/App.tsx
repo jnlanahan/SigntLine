@@ -16,7 +16,18 @@ import { Settings as SettingsView } from "./components/Settings";
 import { DockRail } from "./components/DockRail";
 import { ConversationHistory } from "./components/ConversationHistory";
 import { buildSessionRecord, isWorthSaving } from "./lib/sessionRecord";
-import { toPlanSteps } from "./lib/planSteps";
+import { toPlanSteps, curriculumSteps } from "./lib/planSteps";
+import { CurriculumOutline } from "./components/CurriculumOutline";
+import { detailModuleInBackground } from "./lib/trainingProgress";
+import {
+  appendJournal,
+  beginRun,
+  buildWhereWeLeftOff,
+  currentModule,
+  currentTask,
+} from "../electron/training-plan";
+import { CHECK_MY_WORK_FOLLOW_UP, STUCK_FOLLOW_UP } from "../electron/types";
+import type { TrainingPlan } from "./lib/api";
 import { usePushToTalk } from "./hooks/usePushToTalk";
 import { useTheme } from "./design/ThemeProvider";
 import { Glow, Logo, Spinner, CtrlBtn } from "./design/primitives";
@@ -91,6 +102,7 @@ export default function App() {
   const attachedFileNames = useSession((s) => s.attachedFileNames);
   const agentNotes     = useSession((s) => s.agentNotes);
   const troubleshooting = useSession((s) => s.troubleshooting);
+  const activePlan     = useSession((s) => s.activePlan);
 
   const settings      = useSettings((s) => s.settings);
   const keyStatus     = useSettings((s) => s.keyStatus);
@@ -130,13 +142,17 @@ export default function App() {
   );
 
   // The single ordered plan, derived once and shared by the progress rail and
-  // the step list so the two can never disagree about where you are.
-  const planSteps = toPlanSteps({
-    completedSteps,
-    currentInstruction: instruction,
-    upcomingSteps,
-    done,
-  });
+  // the step list so the two can never disagree about where you are. With a
+  // training plan active, the curriculum is the plan — the loop's flat step
+  // list is just the session's activity log.
+  const planSteps = activePlan
+    ? curriculumSteps(activePlan)
+    : toPlanSteps({
+        completedSteps,
+        currentInstruction: instruction,
+        upcomingSteps,
+        done,
+      });
 
   useEffect(() => { void loadSettings(); }, [loadSettings]);
 
@@ -250,6 +266,78 @@ export default function App() {
     // there's nothing to toggle here — the sidebar is already in place.
   }
 
+  /**
+   * Training: start a session against a persisted curriculum (fresh from the
+   * review screen or resumed from the library). The plan record — not the
+   * session — is the unit of long-term progress here.
+   */
+  function startTrainingSession(plan: TrainingPlan) {
+    if (!keyStatus.anthropic) { setView("settings"); return; }
+    reset();
+    setMode("training");
+    const now = Date.now();
+    const started = beginRun(plan, now);
+    useSession.getState().setActivePlan(started);
+    void api().plans.save(started);
+    journaledRef.current = false;
+    // Resuming into a module that was never detailed (the mid-session call
+    // failed, or the app closed first): write it now, in the background — the
+    // context block re-resolves when it lands.
+    const module = currentModule(started);
+    if (module && !module.detailed) {
+      void detailModuleInBackground(started, started.cursor.module, (m) => api().log(m));
+    }
+    setGoal(plan.goal);
+    const id = `sess_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    useSession.getState().setSessionId(id);
+    sessionStartedAtRef.current = now;
+    void api()
+      .memory.recall(plan.goal)
+      .then(({ text, facts }) => {
+        if (!text) return;
+        if (useSession.getState().sessionId !== id) return;
+        useSession.getState().setRecalledMemory(text);
+        api().log(`[memory] applied ${facts.length} recalled fact(s)`);
+      })
+      .catch(() => {
+        // Memory is never load-bearing.
+      });
+    appendTurn({ role: "user", content: `Goal: ${plan.goal}`, timestamp: now });
+    useSession.getState().setLastSpokeAt(now);
+    useSession.getState().setLastScreenChangeAt(now);
+    setStatus("watching");
+  }
+
+  // Session-end bookkeeping runs exactly once per training session — stop and
+  // quit can both reach it.
+  const journaledRef = useRef(true);
+
+  /**
+   * Overwrite whereWeLeftOff and append the journal entry — the mechanical
+   * memory a future session orients from. No API calls.
+   */
+  const finalizeTrainingPlan = useCallback(() => {
+    if (journaledRef.current) return;
+    const s = useSession.getState();
+    const plan = s.activePlan;
+    if (!plan) return;
+    journaledRef.current = true;
+    const now = Date.now();
+    const task = currentTask(plan);
+    const module = currentModule(plan);
+    let next: TrainingPlan = {
+      ...plan,
+      whereWeLeftOff: buildWhereWeLeftOff(plan, s.completedSteps, now),
+      updatedAt: now,
+    };
+    const note =
+      `${new Date(now).toISOString().slice(0, 10)}: module ${plan.cursor.module + 1} ` +
+      `"${module?.title ?? "?"}", task "${task?.title ?? "?"}" — ` +
+      `${s.completedSteps.length} on-screen action(s) recorded.`;
+    next = appendJournal(next, s.sessionId ?? "", note, now);
+    void api().plans.save(next);
+  }, []);
+
   function pause() {
     cancelTts();
     useSession.getState().setPauseReason("user");
@@ -307,6 +395,7 @@ export default function App() {
 
   function stop() {
     cancelTts();
+    finalizeTrainingPlan();
     void persistSession(evalResult?.verdict ?? null);
     reset();
     setShowPeek(false);
@@ -468,6 +557,7 @@ export default function App() {
           onConfirm={() => {
             // Save before the process goes away — quitting mid-session is the
             // most common way a session actually ends.
+            finalizeTrainingPlan();
             void persistSession(evalResult?.verdict ?? null).finally(() => {
               void api().app.quit();
             });
@@ -500,7 +590,12 @@ export default function App() {
           {!mode ? (
             <ModeSelect onSelect={setMode} onSettings={openSettings} />
           ) : (
-            <GoalPrompt mode={mode} onStart={startSession} onBack={() => { reset(); }} />
+            <GoalPrompt
+              mode={mode}
+              onStart={startSession}
+              onStartPlan={startTrainingSession}
+              onBack={() => { reset(); }}
+            />
           )}
         </div>
       ) : (
@@ -520,7 +615,13 @@ export default function App() {
 
           {planOpen && (
             <>
-              <PlanList steps={planSteps} />
+              {activePlan ? (
+                <div style={{ flexShrink: 0, padding: "8px 12px", borderBottom: `1px solid ${lt(0.08)}` }}>
+                  <CurriculumOutline plan={activePlan} />
+                </div>
+              ) : (
+                <PlanList steps={planSteps} />
+              )}
               <div style={{ flexShrink: 0, padding: "8px 16px 10px", borderBottom: `1px solid ${lt(0.08)}` }}>
                 <ContextPanel
                   fileNames={attachedFileNames}
@@ -556,6 +657,17 @@ export default function App() {
                 }
               />
             </div>
+            {/* Training: the two explicit speech triggers. The coach watches
+                silently; these buttons are how the user asks for its voice. */}
+            {mode === "training" && activePlan && !done && (
+              <div style={{ marginTop: 8 }}>
+                <TrainingActions
+                  busy={status === "thinking" || status === "evaluating"}
+                  onCheckWork={() => submitFollowUp(CHECK_MY_WORK_FOLLOW_UP)}
+                  onStuck={() => submitFollowUp(STUCK_FOLLOW_UP)}
+                />
+              </div>
+            )}
             {evalResult && (
               <div style={{ marginTop: 8 }}>
                 <EvalResultCard
@@ -757,6 +869,65 @@ function DockResizeHandle({ side }: { side: DockSide }) {
       onMouseEnter={(e) => { if (!active) (e.currentTarget as HTMLElement).style.background = lt(0.08); }}
       onMouseLeave={(e) => { if (!active) (e.currentTarget as HTMLElement).style.background = "transparent"; }}
     />
+  );
+}
+
+/* ── Training action row — Check my work · I'm stuck ── */
+
+function TrainingActions({
+  busy,
+  onCheckWork,
+  onStuck,
+}: {
+  busy: boolean;
+  onCheckWork(): void;
+  onStuck(): void;
+}) {
+  const T = useTheme();
+  return (
+    <div className="no-drag" style={{ display: "flex", gap: 8 }}>
+      <button
+        type="button"
+        onClick={onCheckWork}
+        disabled={busy}
+        title="Done with this task? The coach looks at your work and gives feedback"
+        style={{
+          flex: 1,
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
+          padding: "10px 12px", border: 0, borderRadius: 11,
+          background: busy
+            ? lt(0.08)
+            : `linear-gradient(180deg, ${T.accent}, ${T.accentDeep})`,
+          color: busy ? T.ink3 : T.onAccent,
+          fontSize: 12.5, fontWeight: 700, letterSpacing: "0.02em",
+          cursor: busy ? "default" : "pointer",
+          boxShadow: busy ? "none" : `0 4px 12px -4px ${ar(T.accentRGB, 0.7)}`,
+        }}
+      >
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden>
+          <path d="M2 7l3 3 6-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        {busy ? "One sec…" : "Check my work"}
+      </button>
+      <button
+        type="button"
+        onClick={onStuck}
+        disabled={busy}
+        title="Stuck? Get a nudge — a hint, not the answer"
+        style={{
+          flex: 1,
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
+          padding: "10px 12px", borderRadius: 11,
+          border: `1px solid ${lt(0.14)}`,
+          background: lt(0.04),
+          color: busy ? T.ink3 : T.ink2,
+          fontSize: 12.5, fontWeight: 600, letterSpacing: "0.02em",
+          cursor: busy ? "default" : "pointer",
+        }}
+      >
+        🖐 I'm stuck
+      </button>
+    </div>
   );
 }
 

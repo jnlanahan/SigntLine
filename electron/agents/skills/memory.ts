@@ -59,6 +59,6 @@ export function memorySkill(worthRemembering: string): Skill {
 
 export const TECH_SUPPORT_MEMORY = `Worth remembering here: their setup ("they're on the Windows desktop app, not the web version"), a preference ("prefers keyboard shortcuts over menus"), or a problem and its fix ("their VPN blocks the sync port — turning it off fixes uploads").`;
 
-export const TRAINING_MEMORY = `Worth remembering here: how this user's environment is set up, and how they prefer their processes documented.`;
+export const TRAINING_MEMORY = `Worth remembering here: how this user's environment is set up, how they learn best (pace, how much hinting they want), and durable obstacles that keep coming back. Task-level progress belongs to the training plan record, not here.`;
 
 export const TEACHER_MEMORY = `Worth remembering here: what this learner already understands and how they prefer to learn, so a future session doesn't start from zero. Never record anything about their performance that would embarrass them to read back.`;

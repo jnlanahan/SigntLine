@@ -15,6 +15,10 @@ import type { SpeechChunk } from "./speech-chunker";
 import { extractJson } from "./instruction-parse";
 import { PLAN_RESEARCH_RULE } from "./agents/shared";
 import { getAgent } from "./agents/registry";
+import { MODULE_DETAIL_PROMPT } from "./agents/training";
+import { outlineForPrompt } from "./training-plan";
+import type { CurriculumOutline, ModuleTaskDetail } from "./training-plan";
+import type { TrainingPlan } from "./db/schema";
 import { runAgentTurn } from "./agents/harness/runner";
 import { newPlanDraft, type ToolDeps } from "./agents/harness/types";
 import { applyPlanEdits } from "./agents/tools/plan";
@@ -55,6 +59,13 @@ export interface NextInstructionArgs {
   // the memory ranker. Resolved once at session start so it stays byte-stable
   // across ticks rather than churning the prompt every turn.
   recalledMemory?: string;
+  // Training mode: the active plan's context block (learner profile, module
+  // outline, current task, mistake patterns). Re-resolved only when the plan
+  // itself changes, so the header stays cache-friendly.
+  trainingContext?: string;
+  // Training mode: this task's previous check-my-work frame (data URL), sent
+  // on a check turn so the coach can compare attempts.
+  referenceFrame?: string;
   // The visible outcome the agent predicted for its last instruction —
   // round-tripped so it can verify the step happened before advancing.
   lastExpectedResult?: string;
@@ -169,11 +180,14 @@ export async function getClarifications(args: {
   if (!apiKey) throw new MissingApiKeyError();
 
   const client = new Anthropic({ apiKey });
+  const agent = getAgent(args.mode);
+  // Training's deeper intake earns more questions and the tokens to ask them.
+  const limit = agent.maxClarifications ?? 3;
   try {
     const resp = await client.messages.create({
       model: MODEL,
-      max_tokens: 400,
-      system: getAgent(args.mode).clarificationPrompt,
+      max_tokens: limit > 3 ? 800 : 400,
+      system: agent.clarificationPrompt,
       messages: [{ role: "user", content: `Task: ${args.goal}` }],
     });
     const text = extractText(resp);
@@ -182,7 +196,7 @@ export async function getClarifications(args: {
       const obj = JSON.parse(json) as { questions?: unknown };
       if (Array.isArray(obj.questions)) {
         return {
-          questions: obj.questions.slice(0, 3).map((q: unknown) => {
+          questions: obj.questions.slice(0, limit).map((q: unknown) => {
             if (typeof q === "object" && q !== null && "question" in q && "options" in q) {
               const typed = q as { question: string; options: unknown };
               return {
@@ -284,6 +298,192 @@ export async function getSessionPlan(args: {
     // fail safe
   }
   return { overview: "", steps: [] };
+}
+
+/**
+ * Training mode's pre-session call: the full curriculum OUTLINE — every
+ * module's title, summary, and draft task titles, sized to the goal. The
+ * modules are deliberately not detailed here; objectives and done-criteria
+ * are written per module by detailTrainingModule, when that module is about
+ * to start and the plan's journal shows how earlier ones actually went.
+ *
+ * Returns null on any failure — the UI keeps the user at the review step
+ * rather than starting a session against an empty plan.
+ */
+export async function getCurriculumOutline(args: {
+  goal: string;
+  clarifications: Clarification[];
+  screenshot?: string;
+}): Promise<CurriculumOutline | null> {
+  const apiKey = await getKey("anthropic");
+  if (!apiKey) throw new MissingApiKeyError();
+
+  const client = new Anthropic({ apiKey });
+  const clarText = args.clarifications
+    .filter((c) => c.answer.trim())
+    .map((c) => `Q: ${c.question}\nA: ${c.answer}`)
+    .join("\n");
+
+  const userContent: Array<
+    Anthropic.Messages.TextBlockParam | Anthropic.Messages.ImageBlockParam
+  > = [];
+  if (args.screenshot) {
+    userContent.push({
+      type: "text",
+      text: "Here's the user's current screen for context:",
+    });
+    userContent.push({
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: mediaTypeOf(args.screenshot),
+        data: stripDataUrlPrefix(args.screenshot),
+      },
+    });
+  }
+  userContent.push({
+    type: "text",
+    text: `Goal: ${args.goal}${clarText ? `\n\nIntake answers:\n${clarText}` : ""}`,
+  });
+
+  async function callOutline(useWebSearch: boolean) {
+    const params: Anthropic.Messages.MessageCreateParamsNonStreaming = {
+      model: MODEL,
+      max_tokens: 4000,
+      system: getAgent("training").planPrompt,
+      messages: [{ role: "user", content: userContent }],
+    };
+    if (useWebSearch) {
+      (params as { tools?: unknown }).tools = [
+        { type: "web_search_20250305", name: "web_search", max_uses: 3 },
+      ];
+    }
+    return client.messages.create(params);
+  }
+
+  try {
+    let resp;
+    try {
+      resp = await callOutline(true);
+    } catch (err) {
+      console.warn("[SightLine curriculum] web search unavailable, retrying without:", err);
+      resp = await callOutline(false);
+    }
+    const json = extractJson(extractText(resp));
+    if (json) {
+      const obj = JSON.parse(json) as {
+        title?: unknown;
+        overview?: unknown;
+        learnerProfile?: unknown;
+        modules?: unknown;
+      };
+      if (Array.isArray(obj.modules) && obj.modules.length > 0) {
+        return {
+          title: String(obj.title ?? "").trim(),
+          overview: String(obj.overview ?? "").trim(),
+          learnerProfile: String(obj.learnerProfile ?? "").trim(),
+          modules: obj.modules.slice(0, 12).map((m) => {
+            const mod = (m ?? {}) as {
+              title?: unknown;
+              summary?: unknown;
+              taskTitles?: unknown;
+            };
+            return {
+              title: String(mod.title ?? "").trim(),
+              summary: String(mod.summary ?? "").trim(),
+              taskTitles: Array.isArray(mod.taskTitles)
+                ? mod.taskTitles.slice(0, 5).map(String)
+                : [],
+            };
+          }),
+        };
+      }
+    }
+  } catch {
+    // fail safe
+  }
+  return null;
+}
+
+/**
+ * Write objectives and done-criteria for one module of an existing plan,
+ * informed by the journal and mistake patterns — module 5 is written knowing
+ * how modules 1-4 actually went. Returns null on failure; the caller retries
+ * at the next session start.
+ */
+export async function detailTrainingModule(args: {
+  plan: TrainingPlan;
+  moduleIndex: number;
+}): Promise<ModuleTaskDetail[] | null> {
+  const apiKey = await getKey("anthropic");
+  if (!apiKey) throw new MissingApiKeyError();
+  const module = args.plan.modules[args.moduleIndex];
+  if (!module) return null;
+
+  const client = new Anthropic({ apiKey });
+  const journal = args.plan.journal
+    .slice(-10)
+    .map((j) => `- ${j.note}`)
+    .join("\n");
+  const parts = [
+    `Goal: ${args.plan.goal}`,
+    args.plan.learnerProfile ? `Learner profile: ${args.plan.learnerProfile}` : "",
+    outlineForPrompt(args.plan),
+    args.plan.mistakePatterns.length > 0
+      ? `Recurring mistake patterns:\n${args.plan.mistakePatterns.map((m) => `- ${m}`).join("\n")}`
+      : "",
+    journal ? `Journal of past sessions (oldest first):\n${journal}` : "",
+    `Module to detail (module ${args.moduleIndex + 1}): "${module.title}" — ${module.summary}`,
+    `Draft task titles:\n${module.tasks.map((t) => `- ${t.title}`).join("\n")}`,
+  ].filter((p) => p.length > 0);
+
+  async function callDetail(useWebSearch: boolean) {
+    const params: Anthropic.Messages.MessageCreateParamsNonStreaming = {
+      model: MODEL,
+      max_tokens: 3000,
+      system: MODULE_DETAIL_PROMPT,
+      messages: [{ role: "user", content: parts.join("\n\n") }],
+    };
+    if (useWebSearch) {
+      (params as { tools?: unknown }).tools = [
+        { type: "web_search_20250305", name: "web_search", max_uses: 3 },
+      ];
+    }
+    return client.messages.create(params);
+  }
+
+  try {
+    let resp;
+    try {
+      resp = await callDetail(true);
+    } catch (err) {
+      console.warn("[SightLine module detail] web search unavailable, retrying without:", err);
+      resp = await callDetail(false);
+    }
+    const json = extractJson(extractText(resp));
+    if (json) {
+      const obj = JSON.parse(json) as { tasks?: unknown };
+      if (Array.isArray(obj.tasks) && obj.tasks.length > 0) {
+        return obj.tasks.slice(0, 5).map((t) => {
+          const task = (t ?? {}) as {
+            title?: unknown;
+            objective?: unknown;
+            doneCriteria?: unknown;
+          };
+          return {
+            title: String(task.title ?? "").trim(),
+            objective: String(task.objective ?? "").trim(),
+            doneCriteria: Array.isArray(task.doneCriteria)
+              ? task.doneCriteria.map(String)
+              : [],
+          };
+        });
+      }
+    }
+  } catch {
+    // fail safe
+  }
+  return null;
 }
 
 // Mid-session research: real web search via the same server-side tool the

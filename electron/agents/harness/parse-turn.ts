@@ -15,6 +15,7 @@ import { SAY_TOOL } from "./types";
 
 const VALID_ACTIONS = new Set(["instruct", "acknowledge", "check_in", "done"]);
 const VALID_PACES = new Set(["quick", "medium", "long"]);
+const VALID_VERDICTS = new Set(["pass", "not_yet"]);
 
 function str(v: unknown): string {
   return typeof v === "string" ? v.trim() : "";
@@ -70,6 +71,13 @@ export function parseTerminalTool(
     needsResearch: Boolean(input.needsResearch),
     researchQuery: str(input.researchQuery),
     notes: str(input.notes),
+    // Only a spoken turn can grade — a wait carrying a verdict would advance
+    // the plan without the user ever hearing why.
+    taskVerdict:
+      speaking && VALID_VERDICTS.has(str(input.task_verdict))
+        ? (str(input.task_verdict) as InstructionResponse["taskVerdict"])
+        : null,
+    mistakePattern: speaking ? str(input.mistake_pattern) : "",
     highlight: action === "instruct" ? parseHighlight(input.highlight) : null,
     remember: parseRemember(input.remember),
   };

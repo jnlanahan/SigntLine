@@ -114,6 +114,13 @@ export interface TurnContext {
   uploadedContext?: string;
   agentNotes?: string[];
   recalledMemory?: string;
+  // Training mode: the plan block (learner profile, outline, current task,
+  // mistake patterns, where-we-left-off). Resolved when the plan changes, not
+  // per tick, so the header stays cache-friendly.
+  trainingContext?: string;
+  // Training mode: the frame stored at this task's previous check-my-work,
+  // attached on a check turn so the coach can compare attempts.
+  referenceFrame?: string;
   lastExpectedResult?: string;
   secondsSinceScreenChange?: number;
   secondsSinceLastSpoke?: number;
@@ -181,6 +188,8 @@ export interface Agent {
   /** Pre-session prompts. Not part of the per-tick loop. */
   clarificationPrompt: string;
   planPrompt: string;
+  /** How many intake questions the pre-session call may keep. Default 3. */
+  maxClarifications?: number;
 }
 
 // ---------------------------------------------------------------------------

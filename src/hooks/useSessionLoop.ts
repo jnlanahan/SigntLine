@@ -17,6 +17,9 @@ import {
 } from "./useTts";
 import { useQuietPeriod } from "./useQuietPeriod";
 import { ensureAgentPolicy } from "../lib/agentPolicy";
+import { applyTrainingTurn, loadReferenceFrame } from "../lib/trainingProgress";
+import { trainingContextBlock } from "../../electron/training-plan";
+import { CHECK_MY_WORK_FOLLOW_UP } from "../../electron/types";
 import type { AppMode, StepPace } from "../lib/api";
 
 const RETRY_DELAY_MS = 10_000;
@@ -272,6 +275,22 @@ export function useSessionLoop(onNeedsApiKey: () => void) {
         log(
           `tick(${reason}) → Claude: ${gate.why} followUp=${followUp ? `"${followUp.slice(0, 40)}"` : "no"} stalled=${stalled} justStarted=${sessionJustStarted}`,
         );
+
+        // Training: the plan context rides every tick (byte-stable while the
+        // plan is unchanged); the previous-attempt frame rides only a
+        // check-my-work turn, where comparing attempts is the whole point.
+        const trainingContext = s.activePlan
+          ? trainingContextBlock(s.activePlan)
+          : undefined;
+        let referenceFrame: string | undefined;
+        if (
+          s.activePlan &&
+          followUp?.startsWith(CHECK_MY_WORK_FOLLOW_UP.slice(0, 15))
+        ) {
+          referenceFrame =
+            (await loadReferenceFrame(s.activePlan)) ?? undefined;
+        }
+
         const callStartedAt = Date.now();
 
         const result = await api().claude.nextInstruction({
@@ -286,6 +305,8 @@ export function useSessionLoop(onNeedsApiKey: () => void) {
           uploadedContext: s.uploadedContext,
           agentNotes: s.agentNotes,
           recalledMemory: s.recalledMemory,
+          trainingContext,
+          referenceFrame,
           lastExpectedResult: s.lastExpectedResult ?? undefined,
           secondsSinceScreenChange: Math.round(sinceChangeMs / 1000),
           secondsSinceLastSpoke: s.lastSpokeAt
@@ -360,6 +381,13 @@ export function useSessionLoop(onNeedsApiKey: () => void) {
 
         if (result.notes && result.notes.trim().length > 0) {
           useSession.getState().appendAgentNote(result.notes.trim());
+        }
+
+        // Training: a spoken check-my-work verdict (or a noticed mistake
+        // pattern) advances the persisted plan. Async and best-effort — the
+        // spoken feedback is already on its way to the user either way.
+        if (result.taskVerdict || result.mistakePattern) {
+          void applyTrainingTurn(result, log);
         }
 
         // A durable fact for FUTURE sessions. Persisted immediately rather

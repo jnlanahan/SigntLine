@@ -27,6 +27,7 @@ import type {
   SessionSummary,
   TrainingPlan,
 } from "./db/schema";
+import type { CurriculumOutline, ModuleTaskDetail } from "./training-plan";
 
 export interface SightLineApi {
   settings: {
@@ -78,6 +79,8 @@ export interface SightLineApi {
       sessionJustStarted?: boolean;
       screenChanged?: boolean;
       recalledMemory?: string;
+      trainingContext?: string;
+      referenceFrame?: string;
     }): Promise<
       | InstructionResponse
       | { __error: "missing_api_key" }
@@ -93,6 +96,19 @@ export interface SightLineApi {
       clarifications: Clarification[];
       screenshot?: string;
     }): Promise<SessionPlan | { __error: string; message?: string }>;
+    // Training mode: the full curriculum outline (modules + draft task
+    // titles). Null when generation failed — keep the user at the review step.
+    getCurriculumOutline(args: {
+      goal: string;
+      clarifications: Clarification[];
+      screenshot?: string;
+    }): Promise<CurriculumOutline | null | { __error: string; message?: string }>;
+    // Training mode: objectives + done-criteria for one module, written with
+    // the plan's journal in view. Null on failure — retry at next session start.
+    detailModule(args: {
+      plan: TrainingPlan;
+      moduleIndex: number;
+    }): Promise<ModuleTaskDetail[] | null | { __error: string; message?: string }>;
     // Fires once per completed sentence of the instruction while Claude's
     // response is still streaming — lets TTS start on the first sentence.
     onSpeechChunk(cb: (chunk: { text: string; index: number }) => void): () => void;
@@ -187,6 +203,17 @@ export interface SightLineApi {
     list(): Promise<TrainingPlan[]>;
     save(plan: TrainingPlan): Promise<{ saved: boolean }>;
     delete(id: string): Promise<{ deleted: boolean }>;
+    // One stored frame per "Check my work" press — the user-approved
+    // exception to "screenshots never persist". Deleted with the plan.
+    saveFrame(args: {
+      planId: string;
+      frameId: string;
+      dataUrl: string;
+    }): Promise<{ file: string | null }>;
+    loadFrame(args: {
+      planId: string;
+      frameFile: string;
+    }): Promise<{ dataUrl: string | null }>;
   };
   app: {
     quit(): Promise<void>;
@@ -227,6 +254,9 @@ const api: SightLineApi = {
       ipcRenderer.invoke("claude:get-clarifications", args),
     getSessionPlan: (args) =>
       ipcRenderer.invoke("claude:get-session-plan", args),
+    getCurriculumOutline: (args) =>
+      ipcRenderer.invoke("claude:curriculum-outline", args),
+    detailModule: (args) => ipcRenderer.invoke("claude:detail-module", args),
     onSpeechChunk: (cb) => {
       const handler = (
         _: Electron.IpcRendererEvent,
@@ -318,6 +348,8 @@ const api: SightLineApi = {
     list: () => ipcRenderer.invoke("plans:list"),
     save: (plan) => ipcRenderer.invoke("plans:save", plan),
     delete: (id) => ipcRenderer.invoke("plans:delete", { id }),
+    saveFrame: (args) => ipcRenderer.invoke("plans:save-frame", args),
+    loadFrame: (args) => ipcRenderer.invoke("plans:load-frame", args),
   },
   app: {
     quit: () => ipcRenderer.invoke("app:quit"),

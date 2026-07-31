@@ -46,7 +46,9 @@ import {
   type CredentialKey,
 } from "./credentials";
 import {
+  detailTrainingModule,
   getClarifications,
+  getCurriculumOutline,
   getGoalEvaluation,
   getNextInstruction,
   getSessionPlan,
@@ -71,8 +73,10 @@ import {
   listFacts,
   listPlans,
   listSessions,
+  loadPlanFrame,
   newId,
   savePlan,
+  savePlanFrame,
   saveSession,
   touchFacts,
 } from "./db/store";
@@ -1449,6 +1453,62 @@ function registerIpc() {
   ipcMain.handle("plans:delete", (_e, payload: { id: string }) => ({
     deleted: deletePlan(payload.id),
   }));
+
+  ipcMain.handle(
+    "plans:save-frame",
+    (_e, payload: { planId: string; frameId: string; dataUrl: string }) => ({
+      // Strip the data-URL prefix; the store writes raw JPEG bytes.
+      file: savePlanFrame(
+        payload.planId,
+        payload.frameId,
+        payload.dataUrl.replace(/^data:image\/\w+;base64,/, ""),
+      ),
+    }),
+  );
+
+  ipcMain.handle(
+    "plans:load-frame",
+    (_e, payload: { planId: string; frameFile: string }) => {
+      const base64 = loadPlanFrame(payload.planId, payload.frameFile);
+      return { dataUrl: base64 ? `data:image/jpeg;base64,${base64}` : null };
+    },
+  );
+
+  ipcMain.handle(
+    "claude:curriculum-outline",
+    async (
+      _e: IpcMainInvokeEvent,
+      args: { goal: string; clarifications: Clarification[]; screenshot?: string },
+    ) => {
+      try {
+        return await getCurriculumOutline(args);
+      } catch (err) {
+        if (err instanceof MissingApiKeyError) {
+          return { __error: "missing_api_key" } as const;
+        }
+        const msg = err instanceof Error ? err.message : String(err);
+        return { __error: "request_failed", message: msg } as const;
+      }
+    },
+  );
+
+  ipcMain.handle(
+    "claude:detail-module",
+    async (
+      _e: IpcMainInvokeEvent,
+      args: { plan: TrainingPlan; moduleIndex: number },
+    ) => {
+      try {
+        return await detailTrainingModule(args);
+      } catch (err) {
+        if (err instanceof MissingApiKeyError) {
+          return { __error: "missing_api_key" } as const;
+        }
+        const msg = err instanceof Error ? err.message : String(err);
+        return { __error: "request_failed", message: msg } as const;
+      }
+    },
+  );
 
   ipcMain.handle(
     "claude:evaluate-goal",

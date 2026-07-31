@@ -8,7 +8,7 @@ import type { AppMode } from "../lib/api";
 
 const PLACEHOLDER: Record<AppMode, string> = {
   tech_support: "Ask a question, or just talk",
-  training: "Ask a question, or say when the plan is complete",
+  training: "Ask your coach anything — or use the buttons above",
   teacher: "Ask a question or say what to explore next",
 };
 

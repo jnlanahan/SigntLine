@@ -1,6 +1,6 @@
 import { useTheme } from "../design/ThemeProvider";
 import { Eyebrow } from "../design/primitives";
-import { ISupport, IClipboard, ICap, IChevron } from "../design/icons";
+import { ISupport, IClipboard, IChevron } from "../design/icons";
 import { ar, lt } from "../design/theme";
 import type { AppMode } from "../lib/api";
 
@@ -16,6 +16,9 @@ interface ModeCard {
   Icon: (p: { c?: string }) => JSX.Element;
 }
 
+// Teacher mode is deliberately absent for now: Training absorbed the "teach
+// me" job as a multi-session curriculum coach. The teacher agent still exists
+// in electron/agents/ and comes back by re-adding a card here.
 const MODES: ModeCard[] = [
   {
     mode: "tech_support",
@@ -26,14 +29,8 @@ const MODES: ModeCard[] = [
   {
     mode: "training",
     title: "Training",
-    blurb: "Build a structured training plan together as you demonstrate it on screen.",
+    blurb: "SightLine builds a training plan with you, then coaches you through it session by session.",
     Icon: IClipboard,
-  },
-  {
-    mode: "teacher",
-    title: "Teacher",
-    blurb: "Learn a subject from sources you choose — a PDF, a paper, a site.",
-    Icon: ICap,
   },
 ];
 

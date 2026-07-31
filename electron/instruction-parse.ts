@@ -119,6 +119,8 @@ export function parseInstruction(
         needsResearch: Boolean(obj.needsResearch),
         researchQuery: (obj.researchQuery ?? "").trim(),
         notes: (obj.notes ?? "").trim(),
+        taskVerdict: null,
+        mistakePattern: "",
         highlight: action === "instruct" ? parseHighlight(obj.highlight) : null,
         remember: parseRemember(obj.remember),
       };
@@ -140,6 +142,8 @@ export function parseInstruction(
     needsResearch: false,
     researchQuery: "",
     notes: "",
+    taskVerdict: null,
+    mistakePattern: "",
     highlight: null,
     remember: null,
   };

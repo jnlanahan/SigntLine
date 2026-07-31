@@ -27,6 +27,8 @@ import type {
 const MAX_SESSIONS = 500;
 // Memory that grows without limit would eventually crowd out its own ranking.
 const MAX_FACTS = 400;
+// Training plans are few and long-lived; the cap is a runaway backstop.
+const MAX_PLANS = 100;
 
 function dataDir(): string {
   return path.join(app.getPath("userData"), "data");
@@ -204,12 +206,62 @@ export function listPlans(): TrainingPlan[] {
 
 export function savePlan(plan: TrainingPlan): boolean {
   const others = listPlans().filter((p) => p.id !== plan.id);
-  return writeJson(plansFile(), [plan, ...others]);
+  return writeJson(plansFile(), [plan, ...others].slice(0, MAX_PLANS));
 }
 
 export function deletePlan(id: string): boolean {
+  deletePlanFrames(id);
   return writeJson(
     plansFile(),
     listPlans().filter((p) => p.id !== id),
   );
+}
+
+// ── Plan frames ──
+//
+// The one exception to "screenshots never persist": exactly one JPEG per
+// explicit "Check my work" press, so the coach can compare an attempt to the
+// previous one across sessions. Stored beside the data files, deleted with
+// the plan.
+
+function planFramesDir(planId: string): string {
+  // Plan ids come from newId() — base36, no path characters — but sanitize
+  // anyway since the id crosses IPC.
+  return path.join(dataDir(), "plan-frames", planId.replace(/[^a-z0-9_-]/gi, ""));
+}
+
+/** Store a check-my-work frame (base64 JPEG, no data-URL prefix). */
+export function savePlanFrame(
+  planId: string,
+  frameId: string,
+  base64Jpeg: string,
+): string | null {
+  const dir = planFramesDir(planId);
+  if (!ensureDir(dir)) return null;
+  const name = `${frameId.replace(/[^a-z0-9_-]/gi, "")}.jpg`;
+  try {
+    fs.writeFileSync(path.join(dir, name), Buffer.from(base64Jpeg, "base64"));
+    return name;
+  } catch (err) {
+    logLine(`[store] plan frame write failed: ${String(err)}`);
+    return null;
+  }
+}
+
+/** Read a stored frame back as base64, or null if missing. */
+export function loadPlanFrame(planId: string, frameFile: string): string | null {
+  try {
+    const file = path.join(planFramesDir(planId), path.basename(frameFile));
+    return fs.readFileSync(file).toString("base64");
+  } catch {
+    return null;
+  }
+}
+
+export function deletePlanFrames(planId: string): void {
+  try {
+    fs.rmSync(planFramesDir(planId), { recursive: true, force: true });
+  } catch {
+    // best-effort, like every other delete here
+  }
 }

@@ -122,6 +122,16 @@ function buildUserBlocks(
     blocks.push(imageBlock(dataUrl));
   }
 
+  // A stored earlier attempt (training's check-my-work) rides at context
+  // resolution — its job is comparison, not label-reading.
+  if (ctx.referenceFrame) {
+    blocks.push({
+      type: "text",
+      text: "The user's PREVIOUS attempt at this task, from an earlier check (reduced resolution — compare against the latest screenshot):",
+    });
+    blocks.push(imageBlock(toContextResolution(ctx.referenceFrame)));
+  }
+
   if (ctx.followUp && ctx.followUp.trim().length > 0) {
     blocks.push({ type: "text", text: `User follow-up: ${ctx.followUp.trim()}` });
   }

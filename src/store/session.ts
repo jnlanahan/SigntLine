@@ -6,6 +6,7 @@ import type {
   ConversationTurn,
   SessionStatus,
   StepPace,
+  TrainingPlan,
   TtsPlaybackEngine,
   TokenUsage,
   UploadedContext,
@@ -87,6 +88,10 @@ export interface SessionState {
   // Facts recalled from earlier sessions, formatted for the prompt. Resolved
   // once at session start so the prompt prefix stays byte-stable across ticks.
   recalledMemory: string;
+  // Training mode: the persisted curriculum this session works against. The
+  // renderer mutates it through the pure helpers in electron/training-plan.ts
+  // and saves every change back through plans:save.
+  activePlan: TrainingPlan | null;
 
   setStatus(s: SessionStatus): void;
   setMode(mode: AppMode | null): void;
@@ -122,6 +127,7 @@ export interface SessionState {
   recordUsage(usage: TokenUsage, costUsd: number): void;
   setSessionId(id: string | null): void;
   setRecalledMemory(text: string): void;
+  setActivePlan(plan: TrainingPlan | null): void;
   reset(): void;
 }
 
@@ -165,6 +171,7 @@ const initial = {
   claudeCalls: 0,
   sessionId: null as string | null,
   recalledMemory: "",
+  activePlan: null as TrainingPlan | null,
 };
 
 export const useSession = create<SessionState>((set) => ({
@@ -225,6 +232,7 @@ export const useSession = create<SessionState>((set) => ({
   setLastTranscript: (t) => set({ lastTranscript: t }),
   setSessionId: (id) => set({ sessionId: id }),
   setRecalledMemory: (text) => set({ recalledMemory: text }),
+  setActivePlan: (plan) => set({ activePlan: plan }),
   recordUsage: (usage, costUsd) =>
     set((state) => ({
       usage: addUsage(state.usage, usage),

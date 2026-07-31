@@ -122,6 +122,11 @@ export interface InstructionResponse {
   needsResearch: boolean;
   researchQuery: string;
   notes: string;
+  // Training mode: the check-my-work verdict, set only on a turn where the
+  // user pressed the button. Null everywhere else.
+  taskVerdict: "pass" | "not_yet" | null;
+  // Training mode: a recurring mistake kind the coach noticed. Empty when none.
+  mistakePattern: string;
   highlight: HighlightRect | null;
   // A fact worth carrying into FUTURE sessions, distinct from "notes" (which
   // is a scratchpad for this session only). Null on most turns.
@@ -140,6 +145,14 @@ export interface UploadedContext {
   name: string;
   text: string;
 }
+
+// Training mode button presses travel through the normal follow-up path (it
+// already bypasses call spacing and forbids a silent answer). The bracketed
+// markers are how the agent tells a button press from a typed question — the
+// review skill's prompt matches on them.
+export const CHECK_MY_WORK_FOLLOW_UP =
+  "[check-my-work] I think this task is done — check my work.";
+export const STUCK_FOLLOW_UP = "[stuck] I'm stuck — help me get unstuck.";
 
 export interface Clarification {
   question: string;
@@ -349,4 +362,8 @@ export type IpcChannel =
   | "memory:forget"
   | "plans:list"
   | "plans:save"
-  | "plans:delete";
+  | "plans:delete"
+  | "plans:save-frame"
+  | "plans:load-frame"
+  | "claude:curriculum-outline"
+  | "claude:detail-module";

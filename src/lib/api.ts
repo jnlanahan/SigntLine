@@ -41,3 +41,10 @@ export type {
 } from "../../electron/types";
 
 export type { TokenUsage } from "../../electron/usage";
+
+export type {
+  TaskFeedback,
+  TrainingModule,
+  TrainingPlan,
+  TrainingTask,
+} from "../../electron/db/schema";

@@ -142,6 +142,22 @@ describe("skills contribute per-turn context", () => {
     expect(header).not.toContain("the query editor opens");
   });
 
+  it("the training context block reaches only the training agent", () => {
+    const block = 'Training plan: "Pivot Tables from Zero".';
+    const trained = buildContextHeader(
+      getAgent("training"),
+      ctx({ mode: "training", trainingContext: block }),
+      1,
+    );
+    expect(trained).toContain(block);
+    const support = buildContextHeader(
+      getAgent("tech_support"),
+      ctx({ trainingContext: block }),
+      1,
+    );
+    expect(support).not.toContain(block);
+  });
+
   it("situational guidance comes last, after the skill blocks", () => {
     const agent = getAgent("tech_support");
     const header = buildContextHeader(agent, ctx({ stalled: true }), 1);
